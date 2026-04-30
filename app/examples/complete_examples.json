@@ -1,0 +1,152 @@
+{
+  "example_1_living_room_cozy": {
+    "user_prompt": "Create a cozy evening scene for movie watching",
+    "room_id": "living_room",
+    "entities": [
+      {
+        "entity_id": "light.ceiling_main",
+        "domain": "light",
+        "capabilities": ["on_off", "brightness", "color_temp", "effect"],
+        "state": {"value": "on", "attributes": {"brightness": 255, "color_temp": 4000}},
+        "room": "living_room"
+      },
+      {
+        "entity_id": "light.accent_strip",
+        "domain": "light",
+        "capabilities": ["on_off", "brightness", "rgb_color", "effect"],
+        "state": {"value": "on", "attributes": {"brightness": 200, "color": [255, 255, 255]}},
+        "room": "living_room"
+      },
+      {
+        "entity_id": "media_player.living_room_tv",
+        "domain": "media_player",
+        "capabilities": ["on_off", "volume", "source"],
+        "state": {"value": "on", "attributes": {"volume_level": 0.8, "source": "HDMI1"}},
+        "room": "living_room"
+      },
+      {
+        "entity_id": "switch.living_room_blinds",
+        "domain": "switch",
+        "capabilities": ["on_off"],
+        "state": {"value": "on"},
+        "room": "living_room"
+      }
+    ]
+  },
+  "expected_output_cozy_evening": {
+    "scene_name": "Cozy Movie Night",
+    "description": "Dim warm lighting, amber accent lights, and TV ready for streaming",
+    "intent": "Create comfortable movie watching atmosphere",
+    "target_room": "living_room",
+    "confidence": 0.92,
+    "actions": [
+      {
+        "entity_id": "light.ceiling_main",
+        "domain": "light",
+        "service": "turn_on",
+        "data": {"brightness": 50, "color_temp": 3000, "transition": 2},
+        "rationale": "Reduce main light to warm dim setting with smooth transition",
+        "priority": 10
+      },
+      {
+        "entity_id": "light.accent_strip",
+        "domain": "light",
+        "service": "turn_on",
+        "data": {"brightness": 100, "color": [255, 140, 0]},
+        "rationale": "Set accent strip to warm amber for ambiance",
+        "priority": 8
+      },
+      {
+        "entity_id": "media_player.living_room_tv",
+        "domain": "media_player",
+        "service": "volume_set",
+        "data": {"volume_level": 0.6},
+        "rationale": "Reduce TV volume for comfortable viewing",
+        "priority": 5
+      },
+      {
+        "entity_id": "switch.living_room_blinds",
+        "domain": "switch",
+        "service": "turn_off",
+        "data": {},
+        "rationale": "Close blinds to block external light",
+        "priority": 7
+      }
+    ],
+    "warnings": [],
+    "assumptions": [
+      "Lights support warm color temperatures",
+      "Accent strip supports RGB colors",
+      "Blinds use on/off control (on=open, off=closed)"
+    ],
+    "entity_map": {
+      "light.ceiling_main": {"entity_id": "light.ceiling_main", "domain": "light", "capabilities": ["on_off", "brightness", "color_temp", "effect"]},
+      "light.accent_strip": {"entity_id": "light.accent_strip", "domain": "light", "capabilities": ["on_off", "brightness", "rgb_color", "effect"]},
+      "media_player.living_room_tv": {"entity_id": "media_player.living_room_tv", "domain": "media_player", "capabilities": ["on_off", "volume", "source"]},
+      "switch.living_room_blinds": {"entity_id": "switch.living_room_blinds", "domain": "switch", "capabilities": ["on_off"]}
+    }
+  },
+  "example_2_bedroom_morning": {
+    "user_prompt": "Bright and energizing scene for morning wake-up",
+    "room_id": "bedroom",
+    "entities": [
+      {
+        "entity_id": "light.bedroom_main",
+        "domain": "light",
+        "capabilities": ["on_off", "brightness", "color_temp"],
+        "state": {"value": "off"},
+        "room": "bedroom"
+      },
+      {
+        "entity_id": "climate.bedroom_thermostat",
+        "domain": "climate",
+        "capabilities": ["target_temp", "mode"],
+        "state": {"value": "heat_cool", "attributes": {"temperature": 20}},
+        "room": "bedroom"
+      },
+      {
+        "entity_id": "fan.bedroom_ceiling",
+        "domain": "fan",
+        "capabilities": ["on_off", "speed", "oscillate"],
+        "state": {"value": "off"},
+        "room": "bedroom"
+      }
+    ]
+  },
+  "expected_output_morning": {
+    "scene_name": "Good Morning",
+    "description": "Bright cool lighting to energize, comfortable temperature, air circulation",
+    "intent": "Create an energizing morning wake-up experience",
+    "target_room": "bedroom",
+    "confidence": 0.88,
+    "actions": [
+      {
+        "entity_id": "light.bedroom_main",
+        "domain": "light",
+        "service": "turn_on",
+        "data": {"brightness": 255, "color_temp": 5500},
+        "rationale": "Full bright cool-white light for alertness",
+        "priority": 10
+      },
+      {
+        "entity_id": "climate.bedroom_thermostat",
+        "domain": "climate",
+        "service": "set_temperature",
+        "data": {"temperature": 21},
+        "rationale": "Increase temperature to comfortable wake-up level",
+        "priority": 5
+      },
+      {
+        "entity_id": "fan.bedroom_ceiling",
+        "domain": "fan",
+        "service": "turn_on",
+        "data": {"speed": 2},
+        "rationale": "Activate light air circulation for freshness",
+        "priority": 3
+      }
+    ],
+    "warnings": [],
+    "assumptions": ["Climate supports temperature control", "Fan supports speed levels"],
+    "entity_map": {}
+  }
+}

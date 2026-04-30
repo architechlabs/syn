@@ -1,0 +1,24 @@
+name: "AI Scene Planner"
+description: "AI-assisted scene creation for Home Assistant using NVIDIA DeepSeek API"
+version: "0.1.0"
+slug: "ai_scene_planner"
+init: false
+startup: "services"
+arch:
+  - amd64
+  - armv7
+  - arm64
+ports:
+  8000/tcp: 8000
+options:
+  api_key: ""
+  model: "deepseek-ai/deepseek-v4-pro"
+  temperature: 0.0
+  port: 8000
+  log_level: "INFO"
+schema:
+  api_key: "str?"
+  model: "str"
+  temperature: "float(0,1)"
+  port: "port(1024,65535)"
+  log_level: "list(DEBUG|INFO|WARNING|ERROR)"

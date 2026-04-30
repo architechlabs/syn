@@ -1,0 +1,22 @@
+{
+  "scene_name": "Cozy Evening",
+  "description": "Dim main and accent lights, warm color temperature, media player muted.",
+  "intent": "Create a cozy evening atmosphere",
+  "target_room": "living_room",
+  "actions": [
+    {
+      "entity_id": "light.ceiling_living",
+      "domain": "light",
+      "service": "turn_on",
+      "data": {"brightness": 100, "color_temp": 3500},
+      "rationale": "Primary warm light at low brightness",
+      "priority": 10
+    }
+  ],
+  "confidence": 0.88,
+  "warnings": [],
+  "assumptions": ["Assume living_room has an RGB-capable ceiling light"],
+  "entity_map": {
+    "light.ceiling_living": {"entity_id": "light.ceiling_living", "domain": "light", "capabilities": ["on_off","brightness","color_temp"]}
+  }
+}
