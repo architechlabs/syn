@@ -3,7 +3,7 @@ description: "AI-assisted scene creation for Home Assistant using NVIDIA DeepSee
 version: "0.1.0"
 slug: "syn"
 init: false
-startup: "services"
+startup: application
 arch:
   - amd64
   - armv7
