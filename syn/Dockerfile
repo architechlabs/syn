@@ -1,6 +1,16 @@
 ARG BUILD_FROM=python:3.11-slim
 FROM ${BUILD_FROM}
 
+ARG BUILD_VERSION
+ARG BUILD_ARCH
+
+LABEL \
+    io.hass.name="Syn" \
+    io.hass.description="AI-assisted scene creation add-on" \
+    io.hass.version="${BUILD_VERSION}" \
+    io.hass.type="app" \
+    io.hass.arch="${BUILD_ARCH}"
+
 WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1

@@ -38,5 +38,5 @@ schema:
   api_key: "str?"
   model: "str"
   temperature: "float(0,1)"
-  port: "port(1024,65535)"
+  port: port
   log_level: "list(DEBUG|INFO|WARNING|ERROR)"
