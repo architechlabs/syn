@@ -1,15 +1,33 @@
 name: "Syn"
-description: "AI-assisted scene creation for Home Assistant using NVIDIA DeepSeek API"
+description: >-
+  AI-assisted scene creation for Home Assistant using room entities, lights,
+  switches, TVs, media players, and natural language prompts.
 version: "0.1.0"
 slug: "syn"
+url: "https://github.com/architechlabs/syn"
 init: false
-startup: application
+startup: services
+boot: auto
 arch:
   - amd64
   - armv7
   - aarch64
+ingress: true
+ingress_port: 8000
+panel_icon: mdi:creation
+panel_title: Syn
+watchdog: "http://[HOST]:[PORT:8000]/docs"
 ports:
-  8000/tcp: 8000
+  8000/tcp: null
+ports_description:
+  8000/tcp: "Syn API and web interface (ingress preferred)"
+homeassistant_api: true
+auth_api: true
+hassio_api: true
+map:
+  - config:rw
+environment:
+  PORT: "8000"
 options:
   api_key: ""
   model: "deepseek-ai/deepseek-v4-pro"
