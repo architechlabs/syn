@@ -1,7 +1,7 @@
 build_from:
   amd64: "python:3.11-slim"
   armv7: "python:3.11-slim"
-  arm64: "python:3.11-slim"
+  aarch64: "python:3.11-slim"
 labels:
-  org.opencontainers.image.title: "AI Scene Planner"
+  org.opencontainers.image.title: "Syn"
   org.opencontainers.image.description: "AI-assisted scene creation add-on"

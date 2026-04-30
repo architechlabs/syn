@@ -1,13 +1,13 @@
-name: "AI Scene Planner"
+name: "Syn"
 description: "AI-assisted scene creation for Home Assistant using NVIDIA DeepSeek API"
 version: "0.1.0"
-slug: "ai_scene_planner"
+slug: "syn"
 init: false
 startup: "services"
 arch:
   - amd64
   - armv7
-  - arm64
+  - aarch64
 ports:
   8000/tcp: 8000
 options:
