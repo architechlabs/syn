@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ DEFAULT_INTEGRATION_MANIFEST = (
     ADDON_ROOT / "integration" / "custom_components" / "ai_scene" / "manifest.json"
 )
 DEFAULT_INTEGRATION_SOURCE = ADDON_ROOT / "integration" / "custom_components" / "ai_scene"
+DEFAULT_HA_CONFIG_PATH = Path("/config")
 
 _VERSION_PATTERN = re.compile(r"^version:\s*[\"']?([^\"'\s]+)[\"']?\s*$", re.MULTILINE)
 
@@ -117,6 +119,13 @@ def sync_integration_manifest(
     )
 
 
+def resolve_ha_config_path() -> Path:
+    """Return the HA config path visible inside the add-on."""
+
+    configured = os.getenv("HA_CONFIG_PATH") or os.getenv("HOME_ASSISTANT_CONFIG")
+    return Path(configured) if configured else DEFAULT_HA_CONFIG_PATH
+
+
 def ensure_integration_installed(
     ha_config_path: Path,
     addon_config_path: Path = DEFAULT_ADDON_CONFIG,
@@ -130,12 +139,19 @@ def ensure_integration_installed(
     version with the add-on.
     """
 
+    if not ha_config_path.exists():
+        raise FileNotFoundError(ha_config_path)
     if not integration_source_path.exists():
         raise FileNotFoundError(integration_source_path)
 
     target = ha_config_path / "custom_components" / "ai_scene"
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(integration_source_path, target, dirs_exist_ok=True)
+    shutil.copytree(
+        integration_source_path,
+        target,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
     version_sync = sync_integration_manifest(addon_config_path, target / "manifest.json")
     return IntegrationInstallResult(
         source_path=integration_source_path,

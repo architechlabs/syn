@@ -6,10 +6,13 @@ from .ai_client import call_ai_model
 from .validator import validate_and_normalize
 from .storage import SceneStorage
 from .logger import get_logger
-from .version_sync import ensure_integration_installed, sync_integration_manifest
+from .version_sync import (
+    DEFAULT_HA_CONFIG_PATH,
+    ensure_integration_installed,
+    resolve_ha_config_path,
+    sync_integration_manifest,
+)
 from .ui import INDEX_HTML
-import os
-from pathlib import Path
 
 logger = get_logger("addon.main")
 app = FastAPI(title="AI Scene Planner")
@@ -33,12 +36,23 @@ async def sync_versions_on_startup() -> None:
                 "Synchronized integration manifest version to %s",
                 result.integration_version,
             )
-        ha_config_path = os.getenv("HA_CONFIG_PATH") or os.getenv("HOME_ASSISTANT_CONFIG")
-        if ha_config_path:
-            install = ensure_integration_installed(Path(ha_config_path))
-            logger.info("Integration installed/updated at %s", install.target_path)
-    except FileNotFoundError:
-        logger.debug("Version sync skipped because add-on or integration files are unavailable")
+    except FileNotFoundError as exc:
+        logger.warning("Version sync skipped because %s is unavailable", exc)
+
+    ha_config_path = resolve_ha_config_path()
+    try:
+        install = ensure_integration_installed(ha_config_path)
+        logger.info("Integration installed/updated at %s", install.target_path)
+    except FileNotFoundError as exc:
+        if ha_config_path == DEFAULT_HA_CONFIG_PATH and not ha_config_path.exists():
+            logger.warning(
+                "Integration install skipped because Home Assistant config path %s is unavailable",
+                ha_config_path,
+            )
+        else:
+            logger.error("Integration install failed because %s is unavailable", exc)
+    except Exception:
+        logger.exception("Integration install failed")
 
 
 @app.post("/generate_scene", response_model=ScenePlanResponse)

@@ -24,6 +24,7 @@ RUN python3 -m venv /opt/venv \
 
 COPY app ./app
 COPY integration ./integration
+COPY config.yaml ./config.yaml
 
 EXPOSE 8000
 

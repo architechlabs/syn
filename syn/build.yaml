@@ -1,7 +1,7 @@
 build_from:
-  amd64: "python:3.11-slim"
-  armv7: "python:3.11-slim"
-  aarch64: "python:3.11-slim"
+  amd64: "ghcr.io/home-assistant/amd64-base:latest"
+  armv7: "ghcr.io/home-assistant/armv7-base:latest"
+  aarch64: "ghcr.io/home-assistant/aarch64-base:latest"
 labels:
   org.opencontainers.image.title: "Syn"
   org.opencontainers.image.description: "AI-assisted scene creation add-on"
