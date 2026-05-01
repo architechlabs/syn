@@ -2,7 +2,7 @@ name: "Syn"
 description: >-
   AI-assisted scene creation for Home Assistant using room entities, lights,
   switches, TVs, media players, and natural language prompts.
-version: "0.2.4"
+version: "0.2.5"
 slug: "syn"
 url: "https://github.com/architechlabs/syn"
 init: false
@@ -24,6 +24,7 @@ ports_description:
 homeassistant_api: true
 auth_api: true
 hassio_api: true
+hassio_role: homeassistant
 map:
   - config:rw
 environment:

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import os
 import asyncio
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 SUPPORTED_DOMAINS = {"light", "switch", "fan", "media_player", "climate", "cover"}
 DEFAULT_HA_API_URL = "http://supervisor/core/api"
+DEFAULT_HA_CONFIG_PATH = Path("/config")
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,96 @@ def _normalize_state(state: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _read_storage_file(name: str, config_path: Path = DEFAULT_HA_CONFIG_PATH) -> dict[str, Any]:
+    path = config_path / ".storage" / name
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    data = payload.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def _storage_items(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    items = data.get(key)
+    return [item for item in items or [] if isinstance(item, dict)]
+
+
+def _fallback_capabilities(domain: str) -> list[str]:
+    if domain in {"light", "switch", "fan", "media_player", "cover"}:
+        return ["on_off"]
+    if domain == "climate":
+        return ["mode"]
+    return []
+
+
+def _load_storage_registries(config_path: Path = DEFAULT_HA_CONFIG_PATH) -> tuple[dict[str, str], dict[str, str]]:
+    area_data = _read_storage_file("core.area_registry", config_path)
+    device_data = _read_storage_file("core.device_registry", config_path)
+    entity_data = _read_storage_file("core.entity_registry", config_path)
+
+    area_names = {
+        area.get("area_id"): area.get("name", area.get("area_id"))
+        for area in _storage_items(area_data, "areas")
+        if area.get("area_id")
+    }
+    device_areas = {
+        device.get("id"): device.get("area_id")
+        for device in _storage_items(device_data, "devices")
+        if device.get("id") and device.get("area_id")
+    }
+    entity_areas: dict[str, str] = {}
+    for entity in _storage_items(entity_data, "entities"):
+        entity_id = entity.get("entity_id")
+        area_id = entity.get("area_id") or device_areas.get(entity.get("device_id"))
+        if entity_id and area_id:
+            entity_areas[entity_id] = area_names.get(area_id, area_id)
+    return area_names, entity_areas
+
+
+def _list_entities_from_storage(room_id: str | None = None, config_path: Path = DEFAULT_HA_CONFIG_PATH) -> list[dict[str, Any]]:
+    entity_data = _read_storage_file("core.entity_registry", config_path)
+    _, entity_areas = _load_storage_registries(config_path)
+    entities: list[dict[str, Any]] = []
+    for entry in _storage_items(entity_data, "entities"):
+        entity_id = entry.get("entity_id")
+        if not isinstance(entity_id, str) or "." not in entity_id:
+            continue
+        if entry.get("disabled_by") or entry.get("hidden_by"):
+            continue
+        domain = entity_id.split(".", 1)[0]
+        if domain not in SUPPORTED_DOMAINS:
+            continue
+        name = entry.get("name") or entry.get("original_name") or entry.get("unique_id") or entity_id
+        room = entity_areas.get(entity_id)
+        entities.append(
+            {
+                "entity_id": entity_id,
+                "domain": domain,
+                "capabilities": _fallback_capabilities(domain),
+                "state": {
+                    "value": "unknown",
+                    "attributes": {"friendly_name": name},
+                },
+                "room": room,
+                "name": name,
+                "source": "storage",
+            }
+        )
+
+    if room_id:
+        room_key = room_id.strip().lower()
+        entities = [
+            entity for entity in entities
+            if (entity.get("room") or "").lower() == room_key
+            or room_key in (entity.get("entity_id") or "").lower()
+            or room_key in (entity.get("name") or "").lower()
+        ]
+    return entities
+
+
 async def _get_json(path: str, settings: HAApiSettings) -> Any:
     import httpx
 
@@ -105,6 +198,18 @@ async def _get_json(path: str, settings: HAApiSettings) -> Any:
     async with httpx.AsyncClient(timeout=12) as client:
         response = await client.get(f"{settings.base_url}{path}", headers=headers)
         response.raise_for_status()
+        return response.json()
+
+
+async def _post_json(path: str, payload: dict[str, Any], settings: HAApiSettings) -> Any:
+    import httpx
+
+    headers = {"Authorization": f"Bearer {settings.token}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(f"{settings.base_url}{path}", headers=headers, json=payload)
+        response.raise_for_status()
+        if not response.content:
+            return {}
         return response.json()
 
 
@@ -144,7 +249,7 @@ async def _load_registries(settings: HAApiSettings) -> tuple[dict[str, str], dic
 async def list_entities(room_id: str | None = None) -> list[dict[str, Any]]:
     settings = load_ha_api_settings()
     if not settings.configured:
-        return []
+        return _list_entities_from_storage(room_id)
 
     states, (_, entity_areas) = await asyncio.gather(
         _get_json("/states", settings),
@@ -174,6 +279,10 @@ async def list_areas() -> list[dict[str, str]]:
         if area_names:
             return [{"area_id": area_id, "name": name} for area_id, name in sorted(area_names.items())]
 
+    area_names, _ = _load_storage_registries()
+    if area_names:
+        return [{"area_id": area_id, "name": name} for area_id, name in sorted(area_names.items())]
+
     entities = await list_entities()
     rooms = sorted({entity.get("room") for entity in entities if entity.get("room")})
     return [{"area_id": room, "name": room.replace("_", " ").title()} for room in rooms]
@@ -182,12 +291,25 @@ async def list_areas() -> list[dict[str, str]]:
 async def discovery_status() -> dict[str, Any]:
     settings = load_ha_api_settings()
     if not settings.configured:
+        areas = await list_areas()
+        entities = await list_entities()
+        if entities:
+            return {
+                "ok": True,
+                "message": "SUPERVISOR_TOKEN is missing, but Syn loaded entity registry fallback from /config/.storage. Live states and execution still need the token.",
+                "entity_count": len(entities),
+                "area_count": len(areas),
+                "base_url": settings.base_url,
+                "source": "storage",
+                "domains": sorted({entity["domain"] for entity in entities}),
+            }
         return {
             "ok": False,
-            "message": "SUPERVISOR_TOKEN is not available, so Syn cannot read Home Assistant entities.",
+            "message": "SUPERVISOR_TOKEN is not available and /config/.storage did not contain usable entities.",
             "entity_count": 0,
             "area_count": 0,
             "base_url": settings.base_url,
+            "source": "none",
         }
 
     try:
@@ -207,5 +329,47 @@ async def discovery_status() -> dict[str, Any]:
         "entity_count": len(entities),
         "area_count": len(areas),
         "base_url": settings.base_url,
+        "source": "api",
         "domains": sorted({entity["domain"] for entity in entities}),
+    }
+
+
+async def execute_scene_actions(scene: dict[str, Any]) -> dict[str, Any]:
+    settings = load_ha_api_settings()
+    if not settings.configured:
+        return {
+            "overall_status": "failed",
+            "message": "SUPERVISOR_TOKEN is not available, so Syn cannot execute Home Assistant services.",
+            "actions": [],
+        }
+
+    results = []
+    for action in scene.get("actions", []) or []:
+        domain = action.get("domain")
+        service = action.get("service")
+        entity_id = action.get("entity_id")
+        if not domain or not service or not entity_id:
+            results.append({"entity_id": entity_id, "status": "skipped", "message": "Missing domain/service/entity_id"})
+            continue
+        payload = {"entity_id": entity_id}
+        payload.update(action.get("data") or {})
+        try:
+            await _post_json(f"/services/{domain}/{service}", payload, settings)
+            results.append({"entity_id": entity_id, "service": f"{domain}.{service}", "status": "success"})
+        except Exception as exc:
+            results.append(
+                {
+                    "entity_id": entity_id,
+                    "service": f"{domain}.{service}",
+                    "status": "failed",
+                    "message": exc.__class__.__name__,
+                }
+            )
+
+    failed = [result for result in results if result["status"] == "failed"]
+    return {
+        "overall_status": "failed" if failed else "success",
+        "actions": results,
+        "actions_executed": len([result for result in results if result["status"] == "success"]),
+        "actions_failed": len(failed),
     }

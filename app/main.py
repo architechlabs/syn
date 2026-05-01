@@ -4,6 +4,7 @@ from .models import ScenePlanRequest, ScenePlanResponse
 from .prompt_builder import build_prompt
 from .ai_client import AIProviderError, AIProviderTimeout, call_ai_model
 from .ha_client import discovery_status as get_discovery_status
+from .ha_client import execute_scene_actions
 from .ha_client import list_areas, list_entities
 from .validator import validate_and_normalize
 from .storage import SceneStorage
@@ -170,6 +171,14 @@ async def commit_scene(scene_id: str):
     if not committed:
         raise HTTPException(status_code=404, detail="scene not found")
     return {"status": "committed", "scene_id": scene_id}
+
+
+@app.post("/execute_scene")
+async def execute_scene(payload: dict):
+    scene = payload.get("scene") if isinstance(payload, dict) else None
+    if not isinstance(scene, dict):
+        raise HTTPException(status_code=400, detail="scene object is required")
+    return await execute_scene_actions(scene)
 
 
 @app.get("/scenes")

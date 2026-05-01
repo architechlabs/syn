@@ -173,6 +173,7 @@ INDEX_HTML = """<!doctype html>
           </div>
           <div class="actions" style="margin-top:14px">
             <button id="preview">Preview</button>
+            <button class="secondary" id="apply">Apply preview</button>
             <button id="generate">Save draft</button>
             <button class="secondary" id="refresh">Refresh devices</button>
           </div>
@@ -220,7 +221,7 @@ INDEX_HTML = """<!doctype html>
     const statusEl = $("#status");
     const outputEl = $("#output");
     const base = window.location.pathname.endsWith("/") ? window.location.pathname : `${window.location.pathname}/`;
-    const state = {entities: [], domain: "all", areas: []};
+    const state = {entities: [], domain: "all", areas: [], lastScene: null};
     $("#docs").href = `${base}docs`;
 
     const endpoint = (path) => `${base}${path}`;
@@ -359,6 +360,7 @@ INDEX_HTML = """<!doctype html>
         const data = await response.json();
         outputEl.textContent = JSON.stringify(data, null, 2);
         if (!response.ok) throw new Error(data.detail?.message || data.detail || data.errors || `HTTP ${response.status}`);
+        state.lastScene = data.scene || null;
         setStatus("Scene response received.", "ok");
       } catch (error) {
         setStatus(error.message, "bad");
@@ -381,7 +383,29 @@ INDEX_HTML = """<!doctype html>
       setStatus(data.message, data.ok ? "ok" : "bad");
     }
 
+    async function applyPreview() {
+      if (!state.lastScene) {
+        setStatus("Preview a scene first, then apply it.", "bad");
+        return;
+      }
+      setStatus("Applying scene...");
+      try {
+        const response = await fetch(endpoint("execute_scene"), {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({scene: state.lastScene})
+        });
+        const data = await response.json();
+        outputEl.textContent = JSON.stringify(data, null, 2);
+        if (!response.ok || data.overall_status === "failed") throw new Error(data.message || "One or more actions failed.");
+        setStatus(`Applied ${data.actions_executed || 0} actions.`, "ok");
+      } catch (error) {
+        setStatus(error.message, "bad");
+      }
+    }
+
     $("#preview").addEventListener("click", () => send("preview_scene", "Previewing"));
+    $("#apply").addEventListener("click", applyPreview);
     $("#generate").addEventListener("click", () => send("generate_scene", "Saving draft"));
     $("#refresh").addEventListener("click", loadEntities);
     $("#clear-room").addEventListener("click", () => { $("#room").value = ""; loadEntities(); });
