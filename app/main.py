@@ -2,7 +2,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from .models import ScenePlanRequest, ScenePlanResponse
 from .prompt_builder import build_prompt
-from .ai_client import call_ai_model
+from .ai_client import AIProviderError, AIProviderTimeout, call_ai_model
+from .ha_client import discovery_status as get_discovery_status
 from .ha_client import list_areas, list_entities
 from .validator import validate_and_normalize
 from .storage import SceneStorage
@@ -28,6 +29,26 @@ async def _with_discovered_entities(request: ScenePlanRequest) -> ScenePlanReque
     return request.model_copy(update={"entities": discovered})
 
 
+def _require_entities(request: ScenePlanRequest) -> None:
+    if request.entities:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "message": "No controllable entities were selected or discovered.",
+            "fix": "Refresh entities, clear the room filter, or assign devices to an Area in Home Assistant.",
+        },
+    )
+
+
+def _ai_error_response(exc: Exception) -> HTTPException:
+    if isinstance(exc, AIProviderTimeout):
+        return HTTPException(status_code=504, detail=str(exc))
+    if isinstance(exc, AIProviderError):
+        return HTTPException(status_code=502, detail=str(exc))
+    return HTTPException(status_code=502, detail="AI provider failed to return a usable scene")
+
+
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def index():
     """Serve the add-on web UI at the ingress root."""
@@ -40,8 +61,12 @@ async def config_status():
     return {
         "api_key_configured": settings.has_api_key,
         "api_key": mask_secret(settings.api_key),
+        "base_url": settings.base_url,
         "model": settings.model,
         "temperature": settings.temperature,
+        "request_timeout": settings.request_timeout,
+        "max_tokens": settings.max_tokens,
+        "fallback_on_error": settings.fallback_on_error,
         "options_path": str(settings.options_path),
     }
 
@@ -55,6 +80,11 @@ async def areas():
 async def entities(room_id: str | None = None):
     discovered = await list_entities(room_id)
     return {"entities": discovered, "count": len(discovered)}
+
+
+@app.get("/discovery_status")
+async def discovery_status():
+    return await get_discovery_status()
 
 
 @app.on_event("startup")
@@ -100,13 +130,14 @@ async def sync_versions_on_startup() -> None:
 async def generate_scene(request: ScenePlanRequest):
     """Generate a scene plan from prompt + entities."""
     request = await _with_discovered_entities(request)
+    _require_entities(request)
     prompt = build_prompt(request)
     logger.info("Building prompt for scene generation with %d entities", len(request.entities))
     try:
         raw = await call_ai_model(prompt)
     except Exception as exc:
-        logger.exception("AI call failed")
-        raise HTTPException(status_code=502, detail="AI provider failed to return a usable scene") from exc
+        logger.warning("AI call failed: %s", exc)
+        raise _ai_error_response(exc) from exc
 
     logger.debug("Raw AI response captured")
     validated = validate_and_normalize(raw, request.entities)
@@ -150,13 +181,14 @@ async def list_scenes(skip: int = 0, limit: int = 100):
 async def preview_scene(request: ScenePlanRequest):
     """Generate and validate a scene but do not persist; used for UI previews."""
     request = await _with_discovered_entities(request)
+    _require_entities(request)
     prompt = build_prompt(request)
     logger.info("Building prompt for preview with %d entities", len(request.entities))
     try:
         raw = await call_ai_model(prompt)
     except Exception as exc:
-        logger.exception("AI preview call failed")
-        raise HTTPException(status_code=502, detail="AI provider failed to return a usable scene") from exc
+        logger.warning("AI preview call failed: %s", exc)
+        raise _ai_error_response(exc) from exc
     validated = validate_and_normalize(raw, request.entities)
     if not validated.is_valid:
         logger.warning("Validation failed on preview: %s", validated.errors)

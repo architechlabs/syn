@@ -177,3 +177,35 @@ async def list_areas() -> list[dict[str, str]]:
     entities = await list_entities()
     rooms = sorted({entity.get("room") for entity in entities if entity.get("room")})
     return [{"area_id": room, "name": room.replace("_", " ").title()} for room in rooms]
+
+
+async def discovery_status() -> dict[str, Any]:
+    settings = load_ha_api_settings()
+    if not settings.configured:
+        return {
+            "ok": False,
+            "message": "SUPERVISOR_TOKEN is not available, so Syn cannot read Home Assistant entities.",
+            "entity_count": 0,
+            "area_count": 0,
+            "base_url": settings.base_url,
+        }
+
+    try:
+        areas, entities = await asyncio.gather(list_areas(), list_entities())
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"Home Assistant discovery failed: {exc.__class__.__name__}",
+            "entity_count": 0,
+            "area_count": 0,
+            "base_url": settings.base_url,
+        }
+
+    return {
+        "ok": True,
+        "message": "Home Assistant discovery is working.",
+        "entity_count": len(entities),
+        "area_count": len(areas),
+        "base_url": settings.base_url,
+        "domains": sorted({entity["domain"] for entity in entities}),
+    }
