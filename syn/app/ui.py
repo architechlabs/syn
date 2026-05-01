@@ -70,7 +70,7 @@ INDEX_HTML = """<!doctype html>
       letter-spacing: 0.12em;
       text-transform: uppercase;
     }
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       border: 1px solid rgba(255, 255, 255, 0.18);
       border-radius: 18px;
@@ -81,9 +81,31 @@ INDEX_HTML = """<!doctype html>
       outline: none;
     }
     textarea { min-height: 170px; resize: vertical; }
-    input:focus, textarea:focus {
+    input:focus, textarea:focus, select:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(240, 179, 90, 0.18);
+    }
+    .entity-list {
+      display: grid;
+      gap: 8px;
+      max-height: 220px;
+      overflow: auto;
+      padding: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 18px;
+      background: rgba(0, 0, 0, 0.16);
+    }
+    .entity-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      color: var(--text);
+      font: 0.9rem/1.35 Verdana, sans-serif;
+    }
+    .entity-row small {
+      display: block;
+      color: var(--muted);
+      margin-top: 3px;
     }
     .actions {
       display: flex;
@@ -141,26 +163,20 @@ INDEX_HTML = """<!doctype html>
     <section class="hero">
       <div class="card">
         <h1>Syn</h1>
-        <p>Draft Home Assistant scenes from a prompt and the entities you provide. This page is served from the add-on root, so Home Assistant ingress opens a real UI instead of FastAPI's 404 response.</p>
+        <p>Draft Home Assistant scenes from a prompt, room, and live Home Assistant entities. Syn fetches eligible lights, switches, fans, media players, and climate devices through the add-on API.</p>
 
         <label for="prompt">Scene prompt</label>
         <input id="prompt" value="Create a cozy movie night scene">
 
-        <label for="room">Room ID</label>
-        <input id="room" value="living_room">
+        <label for="room">Room or area</label>
+        <input id="room" list="areas" placeholder="living_room">
+        <datalist id="areas"></datalist>
 
-        <label for="entities">Entities JSON</label>
-        <textarea id="entities">[
-  {
-    "entity_id": "light.living_room",
-    "domain": "light",
-    "capabilities": ["on_off", "brightness", "color_temp"],
-    "state": {"value": "off"},
-    "room": "living_room"
-  }
-]</textarea>
+        <label>Detected entities</label>
+        <div id="entity-list" class="entity-list">Loading Home Assistant entities...</div>
 
         <div class="actions">
+          <button class="secondary" id="refresh-entities">Refresh entities</button>
           <button id="preview">Preview scene</button>
           <button id="generate">Generate and save</button>
           <button class="secondary" id="status-check">Check add-on config</button>
@@ -168,7 +184,7 @@ INDEX_HTML = """<!doctype html>
         </div>
         <div id="status" class="status">Ready.</div>
         <div class="hint">
-          <p>Tip: paste entity data from the Syn integration or Developer Tools. API calls use relative URLs like <code>preview_scene</code>, which keeps them working under ingress paths such as <code>/app/..._syn/</code>.</p>
+          <p>Tip: select only the devices you want Syn to control. If no room metadata exists, type part of an entity name such as <code>living</code> and refresh.</p>
         </div>
       </div>
 
@@ -182,6 +198,7 @@ INDEX_HTML = """<!doctype html>
     const statusEl = document.querySelector("#status");
     const outputEl = document.querySelector("#output");
     const buttons = [...document.querySelectorAll("button")];
+    let discoveredEntities = [];
     const ingressBase = window.location.pathname.endsWith("/")
       ? window.location.pathname
       : `${window.location.pathname}/`;
@@ -193,11 +210,60 @@ INDEX_HTML = """<!doctype html>
     }
 
     function payload() {
+      const selected = [...document.querySelectorAll("[data-entity-id]:checked")]
+        .map((input) => discoveredEntities.find((entity) => entity.entity_id === input.value))
+        .filter(Boolean);
       return {
         user_prompt: document.querySelector("#prompt").value,
         room_id: document.querySelector("#room").value || null,
-        entities: JSON.parse(document.querySelector("#entities").value || "[]")
+        entities: selected
       };
+    }
+
+    function renderEntities(entities) {
+      const list = document.querySelector("#entity-list");
+      if (!entities.length) {
+        list.textContent = "No controllable entities found. Try clearing the room filter and refreshing.";
+        return;
+      }
+      list.innerHTML = entities.map((entity) => `
+        <label class="entity-row">
+          <input type="checkbox" data-entity-id checked value="${entity.entity_id}">
+          <span>
+            ${entity.name || entity.entity_id}
+            <small>${entity.entity_id} | ${entity.capabilities.join(", ") || "on/off"}</small>
+          </span>
+        </label>
+      `).join("");
+    }
+
+    async function loadAreas() {
+      try {
+        const response = await fetch(endpoint("areas"));
+        const data = await response.json();
+        document.querySelector("#areas").innerHTML = (data.areas || [])
+          .map((area) => `<option value="${area.area_id}">${area.name}</option>`)
+          .join("");
+      } catch {
+        // Areas are optional; entity discovery still works without them.
+      }
+    }
+
+    async function loadEntities() {
+      statusEl.classList.remove("error");
+      statusEl.textContent = "Fetching Home Assistant entities...";
+      const room = document.querySelector("#room").value;
+      const query = room ? `?room_id=${encodeURIComponent(room)}` : "";
+      try {
+        const response = await fetch(endpoint(`entities${query}`));
+        const data = await response.json();
+        discoveredEntities = data.entities || [];
+        renderEntities(discoveredEntities);
+        statusEl.textContent = `Loaded ${discoveredEntities.length} controllable entities.`;
+      } catch (error) {
+        statusEl.classList.add("error");
+        statusEl.textContent = `Entity fetch failed: ${error.message}`;
+      }
     }
 
     async function send(path, label) {
@@ -226,6 +292,8 @@ INDEX_HTML = """<!doctype html>
 
     document.querySelector("#preview").addEventListener("click", () => send("preview_scene", "Previewing"));
     document.querySelector("#generate").addEventListener("click", () => send("generate_scene", "Generating"));
+    document.querySelector("#refresh-entities").addEventListener("click", loadEntities);
+    document.querySelector("#room").addEventListener("change", loadEntities);
     document.querySelector("#status-check").addEventListener("click", async () => {
       statusEl.classList.remove("error");
       statusEl.textContent = "Checking add-on config...";
@@ -241,6 +309,8 @@ INDEX_HTML = """<!doctype html>
         statusEl.textContent = `Error: ${error.message}`;
       }
     });
+    loadAreas();
+    loadEntities();
   </script>
 </body>
 </html>

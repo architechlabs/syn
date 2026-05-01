@@ -1,11 +1,13 @@
 import os
 import json
 import re
+import asyncio
 from typing import Any, Dict
 import logging
 from .settings import load_ai_settings
 
 logger = logging.getLogger("addon.ai_client")
+AI_TIMEOUT_SECONDS = 75
 
 
 def _extract_json_object(content: Any) -> Dict[str, Any]:
@@ -107,11 +109,7 @@ def _offline_scene(prompt: str) -> Dict[str, Any]:
     }
 
 
-async def call_ai_model(prompt: str) -> Dict[str, Any]:
-    """Call NVIDIA-hosted OpenAI-compatible model. Returns parsed JSON.
-
-    If no API key is configured, returns a sample response for local testing.
-    """
+def _call_ai_model_sync(prompt: str) -> Dict[str, Any]:
     settings = load_ai_settings()
     if not settings.has_api_key:
         logger.warning("No API key found; returning deterministic local fallback")
@@ -121,7 +119,12 @@ async def call_ai_model(prompt: str) -> Dict[str, Any]:
     try:
         from openai import OpenAI
 
-        client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=settings.api_key)
+        client = OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=settings.api_key,
+            timeout=60,
+            max_retries=1,
+        )
         # We call a single-turn chat completion and expect JSON in the assistant content
         response = client.chat.completions.create(
             model=settings.model,
@@ -153,3 +156,16 @@ async def call_ai_model(prompt: str) -> Dict[str, Any]:
     except Exception as exc:
         logger.exception("AI client error")
         raise
+
+
+async def call_ai_model(prompt: str) -> Dict[str, Any]:
+    """Call NVIDIA-hosted OpenAI-compatible model with a hard timeout."""
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_call_ai_model_sync, prompt),
+            timeout=AI_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        logger.error("AI request timed out after %s seconds", AI_TIMEOUT_SECONDS)
+        raise RuntimeError("AI provider request timed out") from exc

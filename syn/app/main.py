@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from .models import ScenePlanRequest, ScenePlanResponse
 from .prompt_builder import build_prompt
 from .ai_client import call_ai_model
+from .ha_client import list_areas, list_entities
 from .validator import validate_and_normalize
 from .storage import SceneStorage
 from .logger import get_logger
@@ -18,6 +19,13 @@ from .ui import INDEX_HTML
 logger = get_logger("addon.main")
 app = FastAPI(title="AI Scene Planner")
 storage = SceneStorage()
+
+
+async def _with_discovered_entities(request: ScenePlanRequest) -> ScenePlanRequest:
+    if request.entities:
+        return request
+    discovered = await list_entities(request.room_id)
+    return request.model_copy(update={"entities": discovered})
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -36,6 +44,17 @@ async def config_status():
         "temperature": settings.temperature,
         "options_path": str(settings.options_path),
     }
+
+
+@app.get("/areas")
+async def areas():
+    return {"areas": await list_areas()}
+
+
+@app.get("/entities")
+async def entities(room_id: str | None = None):
+    discovered = await list_entities(room_id)
+    return {"entities": discovered, "count": len(discovered)}
 
 
 @app.on_event("startup")
@@ -80,8 +99,9 @@ async def sync_versions_on_startup() -> None:
 @app.post("/generate_scene", response_model=ScenePlanResponse)
 async def generate_scene(request: ScenePlanRequest):
     """Generate a scene plan from prompt + entities."""
+    request = await _with_discovered_entities(request)
     prompt = build_prompt(request)
-    logger.info("Building prompt for scene generation")
+    logger.info("Building prompt for scene generation with %d entities", len(request.entities))
     try:
         raw = await call_ai_model(prompt)
     except Exception as exc:
@@ -129,8 +149,9 @@ async def list_scenes(skip: int = 0, limit: int = 100):
 @app.post("/preview_scene")
 async def preview_scene(request: ScenePlanRequest):
     """Generate and validate a scene but do not persist; used for UI previews."""
+    request = await _with_discovered_entities(request)
     prompt = build_prompt(request)
-    logger.info("Building prompt for preview")
+    logger.info("Building prompt for preview with %d entities", len(request.entities))
     try:
         raw = await call_ai_model(prompt)
     except Exception as exc:

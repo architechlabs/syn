@@ -2,6 +2,14 @@ import json
 from .models import ScenePlanRequest
 
 
+def _entity_to_dict(entity):
+    if isinstance(entity, dict):
+        return entity
+    if hasattr(entity, "model_dump"):
+        return entity.model_dump()
+    return entity.dict()
+
+
 PROMPT_TEMPLATE = '''
 You are a professional Home Assistant scene planner. Produce only valid JSON following the provided schema.
 
@@ -39,7 +47,7 @@ Respond with JSON only.
 def build_prompt(request: ScenePlanRequest) -> str:
     room = request.room_id or "unspecified"
     entities = json.dumps(
-        [e.model_dump() if hasattr(e, "model_dump") else e.dict() for e in request.entities],
+        [_entity_to_dict(e) for e in request.entities],
         indent=2,
         sort_keys=True,
     )
