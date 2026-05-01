@@ -1,4 +1,4 @@
-ARG BUILD_FROM=python:3.11-slim
+ARG BUILD_FROM=ghcr.io/home-assistant/base:latest
 FROM ${BUILD_FROM}
 
 ARG BUILD_VERSION
@@ -17,6 +17,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Copy requirements and install
 COPY requirements.txt .
+RUN apk add --no-cache python3 py3-pip
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
 # Copy app
