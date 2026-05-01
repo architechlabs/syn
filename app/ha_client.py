@@ -8,6 +8,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from .settings import DEFAULT_OPTIONS_PATH, _read_options, mask_secret
 
 SUPPORTED_DOMAINS = {"light", "switch", "fan", "media_player", "climate", "cover"}
 DEFAULT_HA_API_URL = "http://supervisor/core/api"
@@ -18,16 +19,35 @@ DEFAULT_HA_CONFIG_PATH = Path("/config")
 class HAApiSettings:
     base_url: str
     token: str
+    source: str
 
     @property
     def configured(self) -> bool:
         return bool(self.token)
 
+    @property
+    def masked_token(self) -> str:
+        return mask_secret(self.token)
+
 
 def load_ha_api_settings() -> HAApiSettings:
+    options = _read_options(Path(os.getenv("ADDON_OPTIONS_PATH", str(DEFAULT_OPTIONS_PATH))))
+    supervisor_token = os.getenv("SUPERVISOR_TOKEN", "").strip()
+    manual_token = (
+        os.getenv("HA_TOKEN")
+        or os.getenv("HOME_ASSISTANT_TOKEN")
+        or str(options.get("ha_token") or "")
+    ).strip()
+    token = supervisor_token or manual_token
+    source = "supervisor" if supervisor_token else "manual" if manual_token else "missing"
+    base_url = (
+        os.getenv("HA_API_URL")
+        or str(options.get("ha_url") or DEFAULT_HA_API_URL)
+    ).rstrip("/")
     return HAApiSettings(
-        base_url=os.getenv("HA_API_URL", DEFAULT_HA_API_URL).rstrip("/"),
-        token=os.getenv("SUPERVISOR_TOKEN", ""),
+        base_url=base_url,
+        token=token,
+        source=source,
     )
 
 
@@ -296,19 +316,21 @@ async def discovery_status() -> dict[str, Any]:
         if entities:
             return {
                 "ok": True,
-                "message": "SUPERVISOR_TOKEN is missing, but Syn loaded entity registry fallback from /config/.storage. Live states and execution still need the token.",
+                "message": "Syn found devices from Home Assistant's registry. Add a Home Assistant token in the add-on options to enable live states and Apply Preview.",
                 "entity_count": len(entities),
                 "area_count": len(areas),
                 "base_url": settings.base_url,
+                "token_source": settings.source,
                 "source": "storage",
                 "domains": sorted({entity["domain"] for entity in entities}),
             }
         return {
             "ok": False,
-            "message": "SUPERVISOR_TOKEN is not available and /config/.storage did not contain usable entities.",
+            "message": "Syn cannot read Home Assistant yet. Add a Home Assistant token in the add-on options, then restart Syn.",
             "entity_count": 0,
             "area_count": 0,
             "base_url": settings.base_url,
+            "token_source": settings.source,
             "source": "none",
         }
 
@@ -321,6 +343,7 @@ async def discovery_status() -> dict[str, Any]:
             "entity_count": 0,
             "area_count": 0,
             "base_url": settings.base_url,
+            "token_source": settings.source,
         }
 
     return {
@@ -329,6 +352,7 @@ async def discovery_status() -> dict[str, Any]:
         "entity_count": len(entities),
         "area_count": len(areas),
         "base_url": settings.base_url,
+        "token_source": settings.source,
         "source": "api",
         "domains": sorted({entity["domain"] for entity in entities}),
     }
@@ -339,7 +363,7 @@ async def execute_scene_actions(scene: dict[str, Any]) -> dict[str, Any]:
     if not settings.configured:
         return {
             "overall_status": "failed",
-            "message": "SUPERVISOR_TOKEN is not available, so Syn cannot execute Home Assistant services.",
+            "message": "Apply Preview needs Home Assistant API access. Add a Home Assistant token in the add-on options, then restart Syn.",
             "actions": [],
         }
 

@@ -2,7 +2,7 @@ name: "Syn"
 description: >-
   AI-assisted scene creation for Home Assistant using room entities, lights,
   switches, TVs, media players, and natural language prompts.
-version: "0.2.5"
+version: "0.2.6"
 slug: "syn"
 url: "https://github.com/architechlabs/syn"
 init: false
@@ -37,6 +37,8 @@ options:
   request_timeout: 30
   max_tokens: 1800
   fallback_on_error: true
+  ha_url: "http://supervisor/core/api"
+  ha_token: ""
   port: 8000
   log_level: "INFO"
 schema:
@@ -47,5 +49,7 @@ schema:
   request_timeout: "int(5,120)"
   max_tokens: "int(256,8192)"
   fallback_on_error: "bool"
+  ha_url: "url"
+  ha_token: "password?"
   port: port
   log_level: "list(DEBUG|INFO|WARNING|ERROR)"

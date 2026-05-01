@@ -5,6 +5,7 @@ from .prompt_builder import build_prompt
 from .ai_client import AIProviderError, AIProviderTimeout, call_ai_model
 from .ha_client import discovery_status as get_discovery_status
 from .ha_client import execute_scene_actions
+from .ha_client import load_ha_api_settings
 from .ha_client import list_areas, list_entities
 from .validator import validate_and_normalize
 from .storage import SceneStorage
@@ -59,6 +60,7 @@ async def index():
 @app.get("/config_status")
 async def config_status():
     settings = load_ai_settings()
+    ha_settings = load_ha_api_settings()
     return {
         "api_key_configured": settings.has_api_key,
         "api_key": mask_secret(settings.api_key),
@@ -69,6 +71,12 @@ async def config_status():
         "max_tokens": settings.max_tokens,
         "fallback_on_error": settings.fallback_on_error,
         "options_path": str(settings.options_path),
+        "home_assistant": {
+            "api_url": ha_settings.base_url,
+            "token_configured": ha_settings.configured,
+            "token_source": ha_settings.source,
+            "token": ha_settings.masked_token,
+        },
     }
 
 

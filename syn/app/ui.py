@@ -221,7 +221,7 @@ INDEX_HTML = """<!doctype html>
     const statusEl = $("#status");
     const outputEl = $("#output");
     const base = window.location.pathname.endsWith("/") ? window.location.pathname : `${window.location.pathname}/`;
-    const state = {entities: [], domain: "all", areas: [], lastScene: null};
+    const state = {entities: [], domain: "all", areas: [], lastScene: null, selectedIds: new Set()};
     $("#docs").href = `${base}docs`;
 
     const endpoint = (path) => `${base}${path}`;
@@ -232,8 +232,8 @@ INDEX_HTML = """<!doctype html>
     }
 
     function selectedEntities() {
-      return [...document.querySelectorAll("[data-entity]:checked")]
-        .map((box) => state.entities.find((entity) => entity.entity_id === box.value))
+      return [...state.selectedIds]
+        .map((entityId) => state.entities.find((entity) => entity.entity_id === entityId))
         .filter(Boolean);
     }
 
@@ -278,7 +278,7 @@ INDEX_HTML = """<!doctype html>
       }
       $("#entities").innerHTML = entities.map((entity) => `
         <label class="entity">
-          <input type="checkbox" data-entity checked value="${entity.entity_id}">
+          <input type="checkbox" data-entity ${state.selectedIds.has(entity.entity_id) ? "checked" : ""} value="${entity.entity_id}">
           <span>
             <strong>${entity.name || entity.entity_id}</strong>
             <small>${entity.entity_id}</small>
@@ -286,7 +286,16 @@ INDEX_HTML = """<!doctype html>
           </span>
         </label>
       `).join("");
-      document.querySelectorAll("[data-entity]").forEach((box) => box.addEventListener("change", renderMetrics));
+      document.querySelectorAll("[data-entity]").forEach((box) => {
+        box.addEventListener("change", () => {
+          if (box.checked) {
+            state.selectedIds.add(box.value);
+          } else {
+            state.selectedIds.delete(box.value);
+          }
+          renderMetrics();
+        });
+      });
       renderMetrics();
     }
 
@@ -319,10 +328,14 @@ INDEX_HTML = """<!doctype html>
       try {
         const data = await getJson(`entities${query}`);
         state.entities = data.entities || [];
+        const available = new Set(state.entities.map((entity) => entity.entity_id));
+        state.selectedIds = new Set([...state.selectedIds].filter((entityId) => available.has(entityId)));
         if (!state.entities.length && room) {
           setStatus(`No devices matched "${room}". Showing all devices so you can choose manually.`, "bad");
           const fallback = await getJson("entities");
           state.entities = fallback.entities || [];
+          const fallbackAvailable = new Set(state.entities.map((entity) => entity.entity_id));
+          state.selectedIds = new Set([...state.selectedIds].filter((entityId) => fallbackAvailable.has(entityId)));
         } else {
           setStatus(`Loaded ${state.entities.length} controllable devices.`, state.entities.length ? "ok" : "bad");
         }
@@ -411,8 +424,14 @@ INDEX_HTML = """<!doctype html>
     $("#clear-room").addEventListener("click", () => { $("#room").value = ""; loadEntities(); });
     $("#room").addEventListener("change", loadEntities);
     $("#search").addEventListener("input", render);
-    $("#select-all").addEventListener("click", () => { document.querySelectorAll("[data-entity]").forEach((box) => box.checked = true); renderMetrics(); });
-    $("#select-none").addEventListener("click", () => { document.querySelectorAll("[data-entity]").forEach((box) => box.checked = false); renderMetrics(); });
+    $("#select-all").addEventListener("click", () => {
+      filteredEntities().forEach((entity) => state.selectedIds.add(entity.entity_id));
+      render();
+    });
+    $("#select-none").addEventListener("click", () => {
+      state.selectedIds.clear();
+      render();
+    });
     $("#config").addEventListener("click", showConfig);
     $("#diagnostics").addEventListener("click", showDiagnostics);
 
