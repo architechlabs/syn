@@ -3,6 +3,7 @@ import json
 import re
 from typing import Any, Dict
 import logging
+from .settings import load_ai_settings
 
 logger = logging.getLogger("addon.ai_client")
 
@@ -111,8 +112,8 @@ async def call_ai_model(prompt: str) -> Dict[str, Any]:
 
     If no API key is configured, returns a sample response for local testing.
     """
-    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("NVIDIA_API_KEY")
-    if not api_key:
+    settings = load_ai_settings()
+    if not settings.has_api_key:
         logger.warning("No API key found; returning deterministic local fallback")
         return _offline_scene(prompt)
 
@@ -120,12 +121,12 @@ async def call_ai_model(prompt: str) -> Dict[str, Any]:
     try:
         from openai import OpenAI
 
-        client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=api_key)
+        client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=settings.api_key)
         # We call a single-turn chat completion and expect JSON in the assistant content
         response = client.chat.completions.create(
-            model="deepseek-ai/deepseek-v4-pro",
+            model=settings.model,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
+            temperature=settings.temperature,
             max_tokens=4096,
             extra_body={"chat_template_kwargs": {"thinking": False}},
         )

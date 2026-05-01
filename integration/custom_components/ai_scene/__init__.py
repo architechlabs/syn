@@ -5,6 +5,7 @@ This module exposes services for preview and commit, and integrates with the add
 import logging
 from typing import Any
 from .services import commit_service, execute_service, generate_service, preview_service
+from .const import ADDON_DEFAULT_URL, DOMAIN
 
 try:
     from homeassistant.core import HomeAssistant
@@ -16,6 +17,9 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup(hass: HomeAssistant, config: dict):
     _LOGGER.info("Setting up AI Scene Planner integration")
+    hass.data.setdefault(DOMAIN, {})
+    if hass.data[DOMAIN].get("services_registered"):
+        return True
     # Register services
     async def _preview(call):
         await preview_service(hass, call)
@@ -33,6 +37,16 @@ async def async_setup(hass: HomeAssistant, config: dict):
     hass.services.async_register("ai_scene", "preview", _preview)
     hass.services.async_register("ai_scene", "commit", _commit)
     hass.services.async_register("ai_scene", "execute_scene", _execute)
+    hass.data[DOMAIN]["services_registered"] = True
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry) -> bool:
+    """Set up AI Scene Planner from the UI."""
+
+    hass.data.setdefault(DOMAIN, {})
+    hass.data["ai_scene_addon_url"] = entry.data.get("addon_url") or ADDON_DEFAULT_URL
+    await async_setup(hass, {})
     return True
 
 

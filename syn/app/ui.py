@@ -163,6 +163,7 @@ INDEX_HTML = """<!doctype html>
         <div class="actions">
           <button id="preview">Preview scene</button>
           <button id="generate">Generate and save</button>
+          <button class="secondary" id="status-check">Check add-on config</button>
           <a class="button secondary" id="docs" href="docs">API docs</a>
         </div>
         <div id="status" class="status">Ready.</div>
@@ -225,6 +226,21 @@ INDEX_HTML = """<!doctype html>
 
     document.querySelector("#preview").addEventListener("click", () => send("preview_scene", "Previewing"));
     document.querySelector("#generate").addEventListener("click", () => send("generate_scene", "Generating"));
+    document.querySelector("#status-check").addEventListener("click", async () => {
+      statusEl.classList.remove("error");
+      statusEl.textContent = "Checking add-on config...";
+      try {
+        const response = await fetch(endpoint("config_status"));
+        const data = await response.json();
+        outputEl.textContent = JSON.stringify(data, null, 2);
+        statusEl.textContent = data.api_key_configured
+          ? "API key is configured in add-on options."
+          : "API key is not configured in add-on options.";
+      } catch (error) {
+        statusEl.classList.add("error");
+        statusEl.textContent = `Error: ${error.message}`;
+      }
+    });
   </script>
 </body>
 </html>
