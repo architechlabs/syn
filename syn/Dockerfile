@@ -12,20 +12,19 @@ LABEL \
     io.hass.arch="${BUILD_ARCH}"
 
 WORKDIR /app
-
 ENV PYTHONUNBUFFERED=1
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy requirements and install
-COPY requirements.txt .
 RUN apk add --no-cache python3 py3-pip
-RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
-# Copy app
+COPY requirements.txt .
+RUN python3 -m venv /opt/venv \
+    && pip install --no-cache-dir -r requirements.txt
+
 COPY app ./app
 COPY integration ./integration
 
-# Expose port
 EXPOSE 8000
 
-# Run FastAPI with uvicorn
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
