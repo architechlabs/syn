@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from .models import ScenePlanRequest, ScenePlanResponse
 from .prompt_builder import build_prompt
 from .ai_client import call_ai_model
@@ -7,12 +7,19 @@ from .validator import validate_and_normalize
 from .storage import SceneStorage
 from .logger import get_logger
 from .version_sync import ensure_integration_installed, sync_integration_manifest
+from .ui import INDEX_HTML
 import os
 from pathlib import Path
 
 logger = get_logger("addon.main")
 app = FastAPI(title="AI Scene Planner")
 storage = SceneStorage()
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def index():
+    """Serve the add-on web UI at the ingress root."""
+    return INDEX_HTML
 
 
 @app.on_event("startup")
