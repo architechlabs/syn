@@ -1,7 +1,7 @@
 {
   "domain": "ai_scene",
   "name": "AI Scene Planner",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "config_flow": true,
   "documentation": "https://example.local/ai_scene",
   "requirements": [],

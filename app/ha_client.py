@@ -38,8 +38,8 @@ def load_ha_api_settings() -> HAApiSettings:
         or os.getenv("HOME_ASSISTANT_TOKEN")
         or str(options.get("ha_token") or "")
     ).strip()
-    token = supervisor_token or manual_token
-    source = "supervisor" if supervisor_token else "manual" if manual_token else "missing"
+    token = manual_token or supervisor_token
+    source = "manual" if manual_token else "supervisor" if supervisor_token else "missing"
     base_url = (
         os.getenv("HA_API_URL")
         or str(options.get("ha_url") or DEFAULT_HA_API_URL)
@@ -49,6 +49,14 @@ def load_ha_api_settings() -> HAApiSettings:
         token=token,
         source=source,
     )
+
+
+def _api_failure_message(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code:
+        return f"Home Assistant API returned HTTP {status_code}"
+    return f"Home Assistant API failed: {exc.__class__.__name__}"
 
 
 def _capabilities(domain: str, attrs: dict[str, Any]) -> list[str]:
@@ -121,7 +129,8 @@ def _normalize_state(state: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _read_storage_file(name: str, config_path: Path = DEFAULT_HA_CONFIG_PATH) -> dict[str, Any]:
+def _read_storage_file(name: str, config_path: Path | None = None) -> dict[str, Any]:
+    config_path = config_path or DEFAULT_HA_CONFIG_PATH
     path = config_path / ".storage" / name
     if not path.exists():
         return {}
@@ -146,7 +155,8 @@ def _fallback_capabilities(domain: str) -> list[str]:
     return []
 
 
-def _load_storage_registries(config_path: Path = DEFAULT_HA_CONFIG_PATH) -> tuple[dict[str, str], dict[str, str]]:
+def _load_storage_registries(config_path: Path | None = None) -> tuple[dict[str, str], dict[str, str]]:
+    config_path = config_path or DEFAULT_HA_CONFIG_PATH
     area_data = _read_storage_file("core.area_registry", config_path)
     device_data = _read_storage_file("core.device_registry", config_path)
     entity_data = _read_storage_file("core.entity_registry", config_path)
@@ -170,7 +180,8 @@ def _load_storage_registries(config_path: Path = DEFAULT_HA_CONFIG_PATH) -> tupl
     return area_names, entity_areas
 
 
-def _list_entities_from_storage(room_id: str | None = None, config_path: Path = DEFAULT_HA_CONFIG_PATH) -> list[dict[str, Any]]:
+def _list_entities_from_storage(room_id: str | None = None, config_path: Path | None = None) -> list[dict[str, Any]]:
+    config_path = config_path or DEFAULT_HA_CONFIG_PATH
     entity_data = _read_storage_file("core.entity_registry", config_path)
     _, entity_areas = _load_storage_registries(config_path)
     entities: list[dict[str, Any]] = []
@@ -271,10 +282,14 @@ async def list_entities(room_id: str | None = None) -> list[dict[str, Any]]:
     if not settings.configured:
         return _list_entities_from_storage(room_id)
 
-    states, (_, entity_areas) = await asyncio.gather(
-        _get_json("/states", settings),
-        _load_registries(settings),
-    )
+    try:
+        states, (_, entity_areas) = await asyncio.gather(
+            _get_json("/states", settings),
+            _load_registries(settings),
+        )
+    except Exception:
+        return _list_entities_from_storage(room_id)
+
     entities = [_normalize_state(state) for state in states if isinstance(state, dict)]
     filtered = [entity for entity in entities if entity]
     for entity in filtered:
@@ -295,9 +310,12 @@ async def list_entities(room_id: str | None = None) -> list[dict[str, Any]]:
 async def list_areas() -> list[dict[str, str]]:
     settings = load_ha_api_settings()
     if settings.configured:
-        area_names, _ = await _load_registries(settings)
-        if area_names:
-            return [{"area_id": area_id, "name": name} for area_id, name in sorted(area_names.items())]
+        try:
+            area_names, _ = await _load_registries(settings)
+            if area_names:
+                return [{"area_id": area_id, "name": name} for area_id, name in sorted(area_names.items())]
+        except Exception:
+            pass
 
     area_names, _ = _load_storage_registries()
     if area_names:
@@ -335,21 +353,36 @@ async def discovery_status() -> dict[str, Any]:
         }
 
     try:
+        raw_states = await _get_json("/states", settings)
         areas, entities = await asyncio.gather(list_areas(), list_entities())
     except Exception as exc:
+        areas = await list_areas()
+        entities = await list_entities()
+        if entities:
+            return {
+                "ok": True,
+                "message": f"{_api_failure_message(exc)}. Syn is using registry fallback. Add/fix Home Assistant token in add-on options for live states and Apply Preview.",
+                "entity_count": len(entities),
+                "area_count": len(areas),
+                "base_url": settings.base_url,
+                "token_source": settings.source,
+                "source": "storage",
+                "domains": sorted({entity["domain"] for entity in entities}),
+            }
         return {
             "ok": False,
-            "message": f"Home Assistant discovery failed: {exc.__class__.__name__}",
+            "message": f"{_api_failure_message(exc)} and registry fallback found no usable entities.",
             "entity_count": 0,
             "area_count": 0,
             "base_url": settings.base_url,
             "token_source": settings.source,
+            "source": "none",
         }
 
     return {
         "ok": True,
         "message": "Home Assistant discovery is working.",
-        "entity_count": len(entities),
+        "entity_count": len(entities) or len(raw_states or []),
         "area_count": len(areas),
         "base_url": settings.base_url,
         "token_source": settings.source,
