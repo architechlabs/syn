@@ -59,6 +59,27 @@ def _as_dict(value: Any) -> Dict[str, Any]:
     return value or {}
 
 
+def _string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    items = value if isinstance(value, list) else [value]
+    normalized: List[str] = []
+    for item in items:
+        if item is None:
+            continue
+        if isinstance(item, str):
+            text = item
+        else:
+            try:
+                text = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            except TypeError:
+                text = str(item)
+        text = text.strip()
+        if text:
+            normalized.append(text)
+    return list(dict.fromkeys(normalized))
+
+
 def _normalize_caps(entity: Dict[str, Any]) -> set[str]:
     caps = set(entity.get("capabilities", []) or [])
     attrs = (entity.get("state") or {}).get("attributes", {}) or {}
@@ -128,8 +149,8 @@ def _repair_raw_scene(raw: Any, available_entities: List[Dict[str, Any]]) -> tup
         "intent": str(raw.get("intent") or raw.get("user_intent") or raw.get("description") or "Create scene"),
         "target_room": str(raw.get("target_room") or raw.get("room") or "unspecified"),
         "confidence": raw.get("confidence", 0.5),
-        "warnings": list(raw.get("warnings") or []),
-        "assumptions": list(raw.get("assumptions") or []),
+        "warnings": _string_list(raw.get("warnings")),
+        "assumptions": _string_list(raw.get("assumptions")),
         "entity_map": {},
         "actions": [],
     }
@@ -193,7 +214,7 @@ def _repair_raw_scene(raw: Any, available_entities: List[Dict[str, Any]]) -> tup
     except (TypeError, ValueError):
         repaired["confidence"] = 0.5
     repaired["confidence"] = min(1.0, max(0.0, repaired["confidence"]))
-    repaired["warnings"] = list(dict.fromkeys(repaired["warnings"] + warnings))
+    repaired["warnings"] = _string_list(repaired["warnings"] + warnings)
     return repaired, warnings
 
 
@@ -345,5 +366,5 @@ def validate_and_normalize(raw: Any, available_entities: List[Dict[str, Any]]) -
 
     normalized = raw.copy()
     normalized["actions"] = sorted(normalized_actions, key=lambda item: item.get("priority", 0), reverse=True)
-    normalized["warnings"] = list(dict.fromkeys((normalized.get("warnings") or []) + warnings))
+    normalized["warnings"] = _string_list((normalized.get("warnings") or []) + warnings)
     return ValidationResult(True, normalized=normalized, warnings=warnings)
