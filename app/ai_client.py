@@ -99,6 +99,56 @@ def _entities_from_prompt(prompt: str) -> list[dict[str, Any]]:
         return []
 
 
+FALLBACK_PALETTE = (
+    [255, 0, 120],
+    [0, 180, 255],
+    [140, 0, 255],
+    [0, 255, 120],
+    [255, 180, 0],
+)
+
+HORROR_PALETTE = (
+    [150, 0, 25],
+    [70, 0, 120],
+    [15, 0, 80],
+)
+
+
+def _fallback_style(intent: str) -> str:
+    text = intent.lower()
+    if any(phrase in text for phrase in ("full brightness", "maximum brightness", "max brightness", "100%", "brightest")):
+        return "full_brightness"
+    if any(word in text for word in ("party", "dance", "club", "disco", "rainbow")):
+        return "party"
+    if any(word in text for word in ("horror", "scary", "spooky", "haunted", "creepy")):
+        return "horror"
+    if any(word in text for word in ("office", "work", "focus", "study", "reading")):
+        return "office"
+    if any(word in text for word in ("movie", "cozy", "cosy", "night", "relax", "dim", "sleep")):
+        return "cozy"
+    return "general"
+
+
+def _wants_motion(intent: str, style: str) -> bool:
+    text = intent.lower()
+    return style in {"party", "horror"} or any(
+        word in text
+        for word in ("smooth", "fade", "gradual", "transition", "pulse", "loop", "changing", "animate", "animated")
+    )
+
+
+def _fallback_kelvin(entity: dict[str, Any], target: int) -> int:
+    attrs = ((entity.get("state") or {}).get("attributes") or {})
+    minimum = attrs.get("min_color_temp_kelvin") or 2000
+    maximum = attrs.get("max_color_temp_kelvin") or 6500
+    try:
+        minimum = int(minimum)
+        maximum = int(maximum)
+    except (TypeError, ValueError):
+        minimum, maximum = 2000, 6500
+    return max(minimum, min(maximum, int(target)))
+
+
 def _offline_scene(prompt: str) -> Dict[str, Any]:
     """Deterministic local fallback used when no API key is configured."""
     entities = _entities_from_prompt(prompt)
@@ -106,6 +156,8 @@ def _offline_scene(prompt: str) -> Dict[str, Any]:
     room = room_match.group(1).strip() if room_match else "unspecified"
     intent_match = re.search(r"User intent:\s*(.*?)\s*Constraints:", prompt, flags=re.S)
     intent = intent_match.group(1).strip() if intent_match else "Create a scene"
+    style = _fallback_style(intent)
+    wants_motion = _wants_motion(intent, style)
 
     actions = []
     entity_map = {}
@@ -115,13 +167,64 @@ def _offline_scene(prompt: str) -> Dict[str, Any]:
         caps = set(entity.get("capabilities", []))
         state = entity.get("state", {})
         data: Dict[str, Any] = {}
+        timing: Dict[str, int] = {}
         service = "turn_on"
 
         if domain == "light":
-            if "brightness" in caps:
+            if wants_motion and style in {"party", "horror"} and "rgb_color" in caps:
+                palette = FALLBACK_PALETTE if style == "party" else HORROR_PALETTE
+                if "brightness" in caps:
+                    data["brightness"] = 185 if style == "party" else 55
+                for phase in range(min(3, len(palette))):
+                    phase_data = dict(data)
+                    phase_data["rgb_color"] = palette[(index + phase) % len(palette)]
+                    phase_data["transition"] = 1.2
+                    entity_map[entity_id] = {
+                        "entity_id": entity_id,
+                        "domain": domain,
+                        "capabilities": sorted(caps),
+                    }
+                    actions.append(
+                        {
+                            "entity_id": entity_id,
+                            "domain": domain,
+                            "service": service,
+                            "data": phase_data,
+                            "rationale": "Local fallback color phase based on advertised RGB capability",
+                            "priority": max(0, 100 - index * 10 - phase),
+                            "delay_ms": phase * 1200,
+                            "duration_ms": 1200,
+                        }
+                    )
+                continue
+            if style == "full_brightness":
+                if "brightness" in caps:
+                    data["brightness"] = 255
+                if "color_temp" in caps:
+                    data["color_temp_kelvin"] = _fallback_kelvin(entity, 6500)
+            elif style == "party" and "rgb_color" in caps:
+                if "brightness" in caps:
+                    data["brightness"] = 185
+                data["rgb_color"] = FALLBACK_PALETTE[index % len(FALLBACK_PALETTE)]
+            elif style == "horror" and "rgb_color" in caps:
+                if "brightness" in caps:
+                    data["brightness"] = 55
+                data["rgb_color"] = [150, 0, 25]
+            elif style == "office":
+                if "brightness" in caps:
+                    data["brightness"] = 190
+                if "color_temp" in caps:
+                    data["color_temp_kelvin"] = _fallback_kelvin(entity, 4200)
+            elif style == "cozy":
+                if "brightness" in caps:
+                    data["brightness"] = 64
+                if "color_temp" in caps:
+                    data["color_temp_kelvin"] = _fallback_kelvin(entity, 2700)
+            elif "brightness" in caps:
                 data["brightness"] = 120
-            if "color_temp" in caps:
-                data["color_temp"] = 370
+            if wants_motion:
+                data["transition"] = 5
+                timing["duration_ms"] = 5000
         elif domain == "media_player":
             if "volume" in caps:
                 data["volume_level"] = 0.35
@@ -138,18 +241,18 @@ def _offline_scene(prompt: str) -> Dict[str, Any]:
             "domain": domain,
             "capabilities": sorted(caps),
         }
-        actions.append(
-            {
-                "entity_id": entity_id,
-                "domain": domain,
-                "service": service,
-                "data": data,
-                "rationale": "Safe local fallback action based on advertised capabilities",
-                "priority": max(0, 100 - index),
-            }
-        )
+        action = {
+            "entity_id": entity_id,
+            "domain": domain,
+            "service": service,
+            "data": data,
+            "rationale": "Safe local fallback action based on advertised capabilities",
+            "priority": max(0, 100 - index),
+        }
+        action.update(timing)
+        actions.append(action)
 
-    return {
+    scene = {
         "scene_name": "AI Scene Draft",
         "description": "Local deterministic scene draft generated without an API key.",
         "intent": intent,
@@ -160,6 +263,14 @@ def _offline_scene(prompt: str) -> Dict[str, Any]:
         "assumptions": ["Only advertised entities and capabilities were used."],
         "entity_map": entity_map,
     }
+    if wants_motion and style in {"party", "horror"}:
+        scene["automation"] = {
+            "mode": "sequence",
+            "summary": "Short local fallback color choreography.",
+            "repeat": 2,
+            "interval_ms": 500,
+        }
+    return scene
 
 
 async def _call_ai_provider(prompt: str, settings) -> Dict[str, Any]:

@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from .models import ScenePlanRequest, ScenePlanResponse
+from .auto_select import auto_select_entities
 from .prompt_builder import build_prompt
 from .ai_client import AIProviderError, AIProviderTimeout, call_ai_model
 from .ha_client import discovery_status as get_discovery_status
@@ -28,8 +29,25 @@ storage = SceneStorage()
 async def _with_discovered_entities(request: ScenePlanRequest) -> ScenePlanRequest:
     if request.entities:
         return request
+    if not request.auto_select:
+        return request
     discovered = await list_entities(request.room_id)
-    return request.model_copy(update={"entities": discovered})
+    selected = auto_select_entities(
+        discovered,
+        prompt=request.user_prompt,
+        room_id=request.room_id,
+    )
+    constraints = dict(request.constraints or {})
+    constraints["auto_selected"] = True
+    constraints["auto_selected_count"] = len(selected)
+    constraints["available_entity_count"] = len(discovered)
+    logger.info(
+        "Auto-selected %d of %d discovered entities for prompt '%s'",
+        len(selected),
+        len(discovered),
+        (request.user_prompt or "")[:80],
+    )
+    return request.model_copy(update={"entities": selected, "constraints": constraints})
 
 
 def _require_entities(request: ScenePlanRequest) -> None:

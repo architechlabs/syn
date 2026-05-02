@@ -12,6 +12,17 @@
     "confidence": {"type": "number","minimum":0,"maximum":1},
     "warnings": {"type":"array","items":{"type":"string"}},
     "assumptions": {"type":"array","items":{"type":"string"}},
+    "automation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"type": "string", "enum": ["one_shot", "sequence", "loop"]},
+        "summary": {"type": "string"},
+        "repeat": {"type": "integer", "minimum": 1, "maximum": 12},
+        "interval_ms": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 300000}
+      }
+    },
     "entity_map": {"type":"object","additionalProperties":{
       "type":"object",
       "properties":{
@@ -33,7 +44,11 @@
           "service": {"type": "string"},
           "data": {"type": "object"},
           "rationale": {"type": "string"},
-          "priority": {"type": "integer"}
+          "priority": {"type": "integer"},
+          "delay_ms": {"type": "integer", "minimum": 0, "maximum": 30000},
+          "duration_ms": {"type": "integer", "minimum": 0, "maximum": 300000},
+          "interval_ms": {"type": "integer", "minimum": 0, "maximum": 10000},
+          "repeat": {"type": "integer", "minimum": 1, "maximum": 12}
         }
       }
     }

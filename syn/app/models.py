@@ -24,6 +24,7 @@ class ScenePlanRequest(BaseModel):
     user_prompt: Optional[str] = None
     room_id: Optional[str] = None
     entities: List[Entity] = []
+    auto_select: bool = True
     constraints: Dict[str, Any] = {}
 
 

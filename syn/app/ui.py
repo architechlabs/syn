@@ -104,6 +104,8 @@ INDEX_HTML = """<!doctype html>
     .metric b { display:block; font-size: 1.45rem; }
     .metric span { color: var(--muted); font-size: .76rem; text-transform: uppercase; letter-spacing: .08em; }
     .toolbar { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; margin-bottom: 10px; }
+    .preset-row { display:flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .preset { padding: 8px 11px; color: var(--ink); background: rgba(85,214,176,.1); border: 1px solid rgba(85,214,176,.25); box-shadow: none; font-size: .82rem; }
     .chips { display:flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 14px; }
     .chip { padding: 8px 11px; font-size: .83rem; color: var(--muted); border: 1px solid var(--line); background: rgba(0,0,0,.18); box-shadow: none; }
     .chip.active { color: #10211d; background: var(--accent-2); border-color: transparent; }
@@ -201,11 +203,18 @@ INDEX_HTML = """<!doctype html>
         <div class="card">
           <div class="card-header">
             <h2>1. Describe</h2>
-            <p class="hint">No YAML. Tell Syn what you want and optionally narrow by area.</p>
+            <p class="hint">No YAML. Tell Syn what you want. If you do not select devices, Syn will auto-pick safe lights/devices.</p>
           </div>
           <div class="card-body">
             <label for="prompt">Scene prompt</label>
             <textarea id="prompt">Create a cozy movie night scene</textarea>
+            <div class="preset-row">
+              <button class="preset" data-prompt="Full brightness in this area with a smooth fade">Full brightness</button>
+              <button class="preset" data-prompt="Cozy movie night with warm dim lights">Movie night</button>
+              <button class="preset" data-prompt="Party loop with changing colorful lights">Party loop</button>
+              <button class="preset" data-prompt="Horror scene with slow red and purple pulsing lights">Horror pulse</button>
+              <button class="preset" data-prompt="Focused office work lighting">Focus</button>
+            </div>
             <div class="split">
               <div>
                 <label for="room">Area or search term</label>
@@ -244,7 +253,7 @@ INDEX_HTML = """<!doctype html>
       <section class="card">
         <div class="card-header">
           <h2>2. Pick Devices</h2>
-          <p class="hint">Syn will only touch selected devices. Search never auto-selects anything.</p>
+          <p class="hint">Manual selection is optional. Auto-pick chooses a small safe set based on prompt and area.</p>
         </div>
         <div class="card-body">
           <div class="metrics">
@@ -259,6 +268,7 @@ INDEX_HTML = """<!doctype html>
           </div>
           <div id="chips" class="chips"></div>
           <div class="actions" style="margin-top:0; margin-bottom:14px">
+            <button id="auto-pick">Auto-pick best devices</button>
             <button class="secondary" id="refresh">Refresh devices</button>
           </div>
           <div id="entities" class="device-list">
@@ -309,6 +319,31 @@ INDEX_HTML = """<!doctype html>
       }[char]));
     }
 
+    function renderTiming(action) {
+      const parts = [];
+      if (action.delay_ms) parts.push(`wait ${Math.round(action.delay_ms / 100) / 10}s`);
+      if (action.duration_ms) parts.push(`fade ${Math.round(action.duration_ms / 100) / 10}s`);
+      if (action.repeat && action.repeat > 1) parts.push(`repeat ${action.repeat}x`);
+      if (action.interval_ms) parts.push(`every ${Math.round(action.interval_ms / 100) / 10}s`);
+      if (action.repeat_index) parts.push(`step ${action.repeat_index}/${action.repeat || "?"}`);
+      return parts.length
+        ? `<div class="plan-badges">${parts.map((part) => `<span class="badge">${escapeHtml(part)}</span>`).join("")}</div>`
+        : "";
+    }
+
+    function renderAutomation(scene) {
+      const automation = scene?.automation;
+      if (!automation) return "";
+      const parts = [];
+      if (automation.mode) parts.push(automation.mode);
+      if (automation.repeat && automation.repeat > 1) parts.push(`sequence ${automation.repeat}x`);
+      if (automation.interval_ms) parts.push(`pause ${Math.round(automation.interval_ms / 100) / 10}s`);
+      if (automation.duration_ms) parts.push(`duration ${Math.round(automation.duration_ms / 100) / 10}s`);
+      return parts.length
+        ? `<div class="plan-badges">${parts.map((part) => `<span class="badge">${escapeHtml(part)}</span>`).join("")}</div>`
+        : "";
+    }
+
     function renderOutput(data) {
       state.lastRaw = data;
       $("#output").textContent = JSON.stringify(data, null, 2);
@@ -332,6 +367,7 @@ INDEX_HTML = """<!doctype html>
                 <span>Status</span><span>${escapeHtml(action.status)}</span>
                 <span>Data</span><span><code>${escapeHtml(JSON.stringify(action.data || {}))}</code></span>
               </div>
+              ${renderTiming(action)}
             </article>
           `).join("")}
         `;
@@ -356,6 +392,7 @@ INDEX_HTML = """<!doctype html>
             <span class="badge">${actions.length} action${actions.length === 1 ? "" : "s"}</span>
             <span class="badge">${Math.round((scene.confidence ?? 0) * 100)}% confidence</span>
           </div>
+          ${renderAutomation(scene)}
         </article>
         ${actions.map((action, index) => `
           <article class="plan-action">
@@ -365,6 +402,7 @@ INDEX_HTML = """<!doctype html>
               <span>Priority</span><span>${escapeHtml(action.priority ?? 0)}</span>
               <span>Data</span><span><code>${escapeHtml(JSON.stringify(action.data || {}))}</code></span>
             </div>
+            ${renderTiming(action)}
           </article>
         `).join("")}
         ${warnings.length ? `<article class="notice warn"><strong>Warnings</strong>${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</article>` : ""}
@@ -405,6 +443,43 @@ INDEX_HTML = """<!doctype html>
         ].join(" ").toLowerCase();
         return haystack.includes(search);
       });
+    }
+
+    function scoreEntity(entity) {
+      const prompt = `${$("#prompt").value} ${$("#room").value}`.toLowerCase();
+      const haystack = [entity.name, entity.entity_id, entity.room, entity.domain, ...(entity.capabilities || [])].join(" ").toLowerCase();
+      const caps = new Set(entity.capabilities || []);
+      let score = 0;
+      if (entity.domain === "light") {
+        score += /light|bright|dim|color|party|horror|movie|scene|focus|office/.test(prompt) ? 100 : 70;
+        if (caps.has("brightness")) score += 16;
+        if (caps.has("rgb_color") || caps.has("effect")) score += 14;
+        if (caps.has("color_temp")) score += 8;
+      } else if (entity.domain === "media_player") {
+        score += /movie|tv|music|audio|speaker|volume/.test(prompt) ? 85 : 8;
+      } else if (entity.domain === "fan") {
+        score += /fan|air|breeze|cool/.test(prompt) ? 85 : 6;
+      } else if (entity.domain === "switch") {
+        score += 30;
+      }
+      prompt.split(/[^a-z0-9_]+/).filter((token) => token.length > 1).forEach((token) => {
+        if (haystack.includes(token)) score += 18;
+      });
+      return score;
+    }
+
+    function autoPickDevices() {
+      const wantsAll = /\\ball\\b|everything|whole|entire|everywhere/i.test($("#prompt").value);
+      const limit = wantsAll ? 24 : 8;
+      const ranked = state.entities
+        .map((entity) => ({entity, score: scoreEntity(entity)}))
+        .filter((item) => item.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit)
+        .map((item) => item.entity.entity_id);
+      state.selectedIds = new Set(ranked);
+      renderEntities();
+      setStatus(ranked.length ? `Auto-picked ${ranked.length} devices. You can preview now.` : "No safe devices found to auto-pick.", ranked.length ? "ok" : "bad");
     }
 
     async function getJson(path) {
@@ -564,20 +639,18 @@ INDEX_HTML = """<!doctype html>
     }
 
     function buildPayload() {
+      const entities = selectedEntities();
       return {
         user_prompt: $("#prompt").value.trim(),
         room_id: $("#room").value.trim() || null,
-        entities: selectedEntities()
+        entities,
+        auto_select: entities.length === 0
       };
     }
 
     async function send(path, label) {
       const payload = buildPayload();
-      if (!payload.entities.length) {
-        setStatus("Select at least one device first.", "bad");
-        return;
-      }
-      setStatus(`${label}...`);
+      setStatus(payload.entities.length ? `${label}...` : `${label} with auto-pick...`);
       document.querySelectorAll("button").forEach((button) => button.disabled = true);
       try {
         const response = await fetch(endpoint(path), {
@@ -635,6 +708,7 @@ INDEX_HTML = """<!doctype html>
     $("#generate").addEventListener("click", () => send("generate_scene", "Saving draft"));
     $("#apply").addEventListener("click", () => applyScene(state.lastScene).catch((error) => setStatus(error.message, "bad")));
     $("#refresh").addEventListener("click", loadEntities);
+    $("#auto-pick").addEventListener("click", autoPickDevices);
     $("#refresh-scenes").addEventListener("click", loadScenes);
     $("#config").addEventListener("click", config);
     $("#diagnostics").addEventListener("click", diagnostics);
@@ -651,6 +725,12 @@ INDEX_HTML = """<!doctype html>
     });
     $("#show-plan").addEventListener("click", () => setOutputMode("plan"));
     $("#show-json").addEventListener("click", () => setOutputMode("json"));
+    document.querySelectorAll("[data-prompt]").forEach((button) => {
+      button.addEventListener("click", () => {
+        $("#prompt").value = button.dataset.prompt;
+        autoPickDevices();
+      });
+    });
 
     loadAreas();
     loadEntities();

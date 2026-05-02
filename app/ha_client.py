@@ -14,6 +14,10 @@ SUPPORTED_DOMAINS = {"light", "switch", "fan", "media_player", "climate", "cover
 DEFAULT_HA_API_URL = "http://supervisor/core/api"
 DEFAULT_MANUAL_HA_API_URL = "http://homeassistant:8123/api"
 DEFAULT_HA_CONFIG_PATH = Path("/config")
+MAX_DELAY_MS = 30_000
+MAX_DURATION_MS = 300_000
+MAX_INTERVAL_MS = 10_000
+MAX_REPEAT = 12
 
 
 @dataclass(frozen=True)
@@ -292,6 +296,37 @@ def _retry_payloads(domain: str, service: str, payload: dict[str, Any]) -> list[
     return unique
 
 
+def _bounded_action_int(action: dict[str, Any], key: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(action.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _payload_with_timing(action: dict[str, Any]) -> dict[str, Any]:
+    payload = {"entity_id": action.get("entity_id")}
+    payload.update(action.get("data") or {})
+    duration_ms = _bounded_action_int(action, "duration_ms", 0, 0, MAX_DURATION_MS)
+    if (
+        duration_ms
+        and action.get("domain") == "light"
+        and action.get("service") == "turn_on"
+        and payload.get("transition") is None
+    ):
+        payload["transition"] = round(duration_ms / 1000, 2)
+    return payload
+
+
+def _scene_automation(scene: dict[str, Any]) -> dict[str, int | str]:
+    automation = scene.get("automation") if isinstance(scene.get("automation"), dict) else {}
+    mode = str(automation.get("mode") or "one_shot")
+    repeat_default = 1 if mode == "one_shot" else 1
+    repeat = _bounded_action_int(automation, "repeat", repeat_default, 1, MAX_REPEAT)
+    interval_ms = _bounded_action_int(automation, "interval_ms", 0, 0, MAX_INTERVAL_MS)
+    return {"mode": mode, "repeat": repeat, "interval_ms": interval_ms}
+
+
 async def _try_get_json(path: str, settings: HAApiSettings) -> Any:
     try:
         return await _get_json(path, settings)
@@ -458,60 +493,76 @@ async def execute_scene_actions(scene: dict[str, Any]) -> dict[str, Any]:
             "actions_failed": 0,
         }
 
+    automation = _scene_automation(scene)
+    sequence_repeat = int(automation["repeat"])
+    sequence_interval_ms = int(automation["interval_ms"])
+    planned_calls = sequence_repeat * sum(_bounded_action_int(action, "repeat", 1, 1, MAX_REPEAT) for action in actions)
     results = []
-    for action in actions:
-        domain = action.get("domain")
-        service = action.get("service")
-        entity_id = action.get("entity_id")
-        if not domain or not service or not entity_id:
-            results.append({"entity_id": entity_id, "status": "skipped", "message": "Missing domain/service/entity_id"})
-            continue
-        payload = {"entity_id": entity_id}
-        payload.update(action.get("data") or {})
-        attempts = _retry_payloads(domain, service, payload)
-        last_exc: Exception | None = None
-        try:
-            applied_payload = attempts[0]
-            for index, attempt in enumerate(attempts):
+    for sequence_index in range(sequence_repeat):
+        for action in actions:
+            domain = action.get("domain")
+            service = action.get("service")
+            entity_id = action.get("entity_id")
+            if not domain or not service or not entity_id:
+                results.append({"entity_id": entity_id, "status": "skipped", "message": "Missing domain/service/entity_id"})
+                continue
+            delay_ms = _bounded_action_int(action, "delay_ms", 0, 0, MAX_DELAY_MS)
+            interval_ms = _bounded_action_int(action, "interval_ms", 0, 0, MAX_INTERVAL_MS)
+            repeat = _bounded_action_int(action, "repeat", 1, 1, MAX_REPEAT)
+            if delay_ms:
+                await asyncio.sleep(delay_ms / 1000)
+
+            for repeat_index in range(repeat):
+                payload = _payload_with_timing(action)
+                attempts = _retry_payloads(domain, service, payload)
+                last_exc: Exception | None = None
                 try:
-                    await _post_json(f"/services/{domain}/{service}", attempt, settings)
-                    applied_payload = attempt
-                    if index > 0:
-                        results.append(
-                            {
-                                "entity_id": entity_id,
-                                "service": f"{domain}.{service}",
-                                "data": applied_payload,
-                                "status": "success",
-                                "message": "Applied after simplifying unsupported light data",
-                            }
-                        )
-                    else:
-                        results.append(
-                            {
+                    applied_payload = attempts[0]
+                    for index, attempt in enumerate(attempts):
+                        try:
+                            await _post_json(f"/services/{domain}/{service}", attempt, settings)
+                            applied_payload = attempt
+                            result = {
                                 "entity_id": entity_id,
                                 "service": f"{domain}.{service}",
                                 "data": applied_payload,
                                 "status": "success",
                             }
-                        )
-                    last_exc = None
-                    break
+                            if sequence_repeat > 1:
+                                result["sequence_index"] = sequence_index + 1
+                                result["sequence_repeat"] = sequence_repeat
+                            if repeat > 1:
+                                result["repeat_index"] = repeat_index + 1
+                                result["repeat"] = repeat
+                            if index > 0:
+                                result["message"] = "Applied after simplifying unsupported light data"
+                            results.append(result)
+                            last_exc = None
+                            break
+                        except Exception as exc:
+                            last_exc = exc
+                    if last_exc:
+                        raise last_exc
                 except Exception as exc:
-                    last_exc = exc
-            if last_exc:
-                raise last_exc
-            continue
-        except Exception as exc:
-            results.append(
-                {
-                    "entity_id": entity_id,
-                    "service": f"{domain}.{service}",
-                    "data": attempts[0],
-                    "status": "failed",
-                    "message": _api_failure_message(exc),
-                }
-            )
+                    failed_result = {
+                        "entity_id": entity_id,
+                        "service": f"{domain}.{service}",
+                        "data": attempts[0],
+                        "status": "failed",
+                        "message": _api_failure_message(exc),
+                    }
+                    if sequence_repeat > 1:
+                        failed_result["sequence_index"] = sequence_index + 1
+                        failed_result["sequence_repeat"] = sequence_repeat
+                    if repeat > 1:
+                        failed_result["repeat_index"] = repeat_index + 1
+                        failed_result["repeat"] = repeat
+                    results.append(failed_result)
+
+                if repeat_index < repeat - 1 and interval_ms:
+                    await asyncio.sleep(interval_ms / 1000)
+        if sequence_index < sequence_repeat - 1 and sequence_interval_ms:
+            await asyncio.sleep(sequence_interval_ms / 1000)
 
     failed = [result for result in results if result["status"] == "failed"]
     skipped = [result for result in results if result["status"] == "skipped"]
@@ -519,7 +570,7 @@ async def execute_scene_actions(scene: dict[str, Any]) -> dict[str, Any]:
     status = "success" if succeeded and not failed and not skipped else "failed"
     return {
         "overall_status": status,
-        "message": f"Applied {len(succeeded)} of {len(actions)} scene actions.",
+        "message": f"Applied {len(succeeded)} of {planned_calls} service calls across {len(actions)} scene actions.",
         "actions": results,
         "actions_executed": len(succeeded),
         "actions_failed": len(failed),

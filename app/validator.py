@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 import json
 import os
 import logging
+import re
 
 logger = logging.getLogger("addon.validator")
 
@@ -69,9 +70,31 @@ STYLE_PALETTES = {
 }
 
 EFFECT_PREFERENCES = {
-    "party": ("party", "club", "pulse", "rainbow", "color", "flow", "dynamic", "dance"),
-    "horror": ("candle", "fire", "pulse", "night", "mystic", "storm", "spooky"),
+    "party": ("party", "rhythm", "pulse", "pastel", "mojito", "diwali", "club", "rainbow", "color", "flow", "dynamic", "dance"),
+    "horror": ("halloween", "fire", "candle", "pulse", "night", "deep", "mystic", "storm", "spooky"),
 }
+
+TIMING_FIELDS = ("delay_ms", "duration_ms", "interval_ms", "repeat")
+MAX_DELAY_MS = 30_000
+MAX_DURATION_MS = 300_000
+MAX_INTERVAL_MS = 10_000
+MAX_REPEAT = 12
+
+TIMING_ALIASES = (
+    ("delay_ms", "delay_ms", "ms", 0, MAX_DELAY_MS),
+    ("wait_ms", "delay_ms", "ms", 0, MAX_DELAY_MS),
+    ("delay", "delay_ms", "s", 0, MAX_DELAY_MS),
+    ("wait", "delay_ms", "s", 0, MAX_DELAY_MS),
+    ("delay_seconds", "delay_ms", "s", 0, MAX_DELAY_MS),
+    ("duration_ms", "duration_ms", "ms", 0, MAX_DURATION_MS),
+    ("fade_ms", "duration_ms", "ms", 0, MAX_DURATION_MS),
+    ("transition_ms", "duration_ms", "ms", 0, MAX_DURATION_MS),
+    ("duration", "duration_ms", "s", 0, MAX_DURATION_MS),
+    ("fade", "duration_ms", "s", 0, MAX_DURATION_MS),
+    ("transition_seconds", "duration_ms", "s", 0, MAX_DURATION_MS),
+    ("interval_ms", "interval_ms", "ms", 0, MAX_INTERVAL_MS),
+    ("interval", "interval_ms", "s", 0, MAX_INTERVAL_MS),
+)
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -101,6 +124,89 @@ def _string_list(value: Any) -> List[str]:
         if text:
             normalized.append(text)
     return list(dict.fromkeys(normalized))
+
+
+def _timing_value_to_ms(value: Any, default_unit: str = "ms") -> int | None:
+    if isinstance(value, str):
+        match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(ms|s|sec|secs|second|seconds)?\s*", value, flags=re.I)
+        if not match:
+            return None
+        number = float(match.group(1))
+        unit = (match.group(2) or default_unit).lower()
+        return int(round(number * 1000)) if unit.startswith("s") else int(round(number))
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        return int(round(number * 1000)) if default_unit == "s" else int(round(number))
+    return None
+
+
+def _bounded_int(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, int(value)))
+
+
+def _normalize_action_timing(action: Dict[str, Any], warnings: List[str], entity_id: str | None = None) -> Dict[str, int]:
+    timing: Dict[str, int] = {}
+    label = entity_id or action.get("entity_id") or "action"
+
+    for source, target, unit, minimum, maximum in TIMING_ALIASES:
+        if target in timing or source not in action:
+            continue
+        parsed = _timing_value_to_ms(action.get(source), unit)
+        if parsed is None:
+            warnings.append(f"Removed invalid timing field '{source}' for {label}")
+            continue
+        bounded = _bounded_int(parsed, minimum, maximum)
+        if bounded != parsed:
+            warnings.append(f"Clamped {target} for {label} to {bounded}")
+        if bounded:
+            timing[target] = bounded
+
+    for source in ("repeat", "repeats", "repeat_count"):
+        if "repeat" in timing or source not in action:
+            continue
+        try:
+            repeat = int(action.get(source))
+        except (TypeError, ValueError):
+            warnings.append(f"Removed invalid repeat field for {label}")
+            continue
+        bounded = _bounded_int(repeat, 1, MAX_REPEAT)
+        if bounded != repeat:
+            warnings.append(f"Clamped repeat for {label} to {bounded}")
+        timing["repeat"] = bounded
+
+    return timing
+
+
+def _normalize_scene_automation(raw: Any, warnings: List[str]) -> Dict[str, Any] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        warnings.append("Removed invalid scene automation block")
+        return None
+
+    automation: Dict[str, Any] = {}
+    mode = str(raw.get("mode") or "sequence").strip().lower()
+    automation["mode"] = mode if mode in {"one_shot", "sequence", "loop"} else "sequence"
+    if raw.get("summary"):
+        automation["summary"] = str(raw.get("summary"))[:240]
+
+    try:
+        repeat = int(raw.get("repeat", 1))
+    except (TypeError, ValueError):
+        repeat = 1
+    automation["repeat"] = _bounded_int(repeat, 1, MAX_REPEAT)
+
+    interval_ms = _timing_value_to_ms(raw.get("interval_ms", raw.get("interval", 0)), "ms")
+    if interval_ms:
+        automation["interval_ms"] = _bounded_int(interval_ms, 0, MAX_INTERVAL_MS)
+
+    duration_ms = _timing_value_to_ms(raw.get("duration_ms", raw.get("duration", 0)), "ms")
+    if duration_ms:
+        automation["duration_ms"] = _bounded_int(duration_ms, 0, MAX_DURATION_MS)
+
+    if automation["mode"] == "one_shot" and automation["repeat"] > 1:
+        automation["mode"] = "sequence"
+    return automation
 
 
 def _normalize_caps(entity: Dict[str, Any]) -> set[str]:
@@ -141,11 +247,16 @@ def _effect_list(entity: Dict[str, Any]) -> List[str]:
 def _choose_effect(style: str, entity: Dict[str, Any]) -> str | None:
     effects = _effect_list(entity)
     preferences = EFFECT_PREFERENCES.get(style, ())
+    matches: List[str] = []
     for wanted in preferences:
         for effect in effects:
-            if wanted in effect.lower():
-                return effect
-    return None
+            if wanted in effect.lower() and effect not in matches:
+                matches.append(effect)
+    if not matches:
+        return None
+    if style in {"party", "horror"}:
+        return matches[_stable_index(str(entity.get("entity_id") or ""), len(matches))]
+    return matches[0]
 
 
 def _scene_style(scene: Dict[str, Any]) -> str:
@@ -153,6 +264,21 @@ def _scene_style(scene: Dict[str, Any]) -> str:
         str(scene.get(key) or "")
         for key in ("scene_name", "description", "intent", "target_room")
     ).lower()
+    if any(
+        phrase in text
+        for phrase in (
+            "full brightness",
+            "full bright",
+            "maximum brightness",
+            "max brightness",
+            "100%",
+            "hundred percent",
+            "brightest",
+            "all lights full",
+            "everything full",
+        )
+    ):
+        return "full_brightness"
     if any(word in text for word in ("party", "dance", "club", "disco", "celebration", "rainbow")):
         return "party"
     if any(word in text for word in ("horror", "scary", "spooky", "haunted", "creepy", "blood", "eerie")):
@@ -284,6 +410,9 @@ def _repair_raw_scene(raw: Any, available_entities: List[Dict[str, Any]]) -> tup
         "entity_map": {},
         "actions": [],
     }
+    automation = _normalize_scene_automation(raw.get("automation"), warnings)
+    if automation:
+        repaired["automation"] = automation
 
     raw_actions = raw.get("actions") or raw.get("service_calls") or raw.get("steps") or []
     if isinstance(raw_actions, dict):
@@ -335,16 +464,16 @@ def _repair_raw_scene(raw: Any, available_entities: List[Dict[str, Any]]) -> tup
         referenced_ids.add(eid)
         if inferred_entity:
             warnings.append(f"Repaired missing entity_id for {eid}")
-        repaired["actions"].append(
-            {
-                "entity_id": eid,
-                "domain": domain,
-                "service": service,
-                "data": data,
-                "rationale": str(action.get("rationale") or action.get("reason") or "Generated by Syn"),
-                "priority": int(action.get("priority", max(0, 100 - index))),
-            }
-        )
+        repaired_action = {
+            "entity_id": eid,
+            "domain": domain,
+            "service": service,
+            "data": data,
+            "rationale": str(action.get("rationale") or action.get("reason") or "Generated by Syn"),
+            "priority": int(action.get("priority", max(0, 100 - index))),
+        }
+        repaired_action.update(_normalize_action_timing(action, warnings, eid))
+        repaired["actions"].append(repaired_action)
 
     if not repaired["actions"] and entity_map:
         for entity in entity_map.values():
@@ -402,6 +531,11 @@ def _normalize_action_data(
             if key not in allowed_keys:
                 warnings.append(f"Removed unsupported light data '{key}' for {entity_id}")
                 normalized.pop(key, None)
+        if "transition" in normalized:
+            transition = normalized["transition"]
+            if not isinstance(transition, (int, float)) or isinstance(transition, bool) or not (0 <= float(transition) <= 300):
+                raise ValueError(f"Invalid transition for {entity_id}: {transition}")
+            normalized["transition"] = round(float(transition), 2)
         if "brightness" in normalized:
             brightness = normalized["brightness"]
             if not isinstance(brightness, int) or not (0 <= brightness <= 255):
@@ -492,18 +626,34 @@ def _tune_action_for_scene(
     style = _scene_style(scene)
 
     if tuned.get("domain") == "light" and tuned.get("service") == "turn_on":
-        data.pop("transition", None)
         if "effect" in data and not data.get("effect"):
             data.pop("effect", None)
 
         chosen_effect = _choose_effect(style, entity) if "effect" in caps else None
-        if chosen_effect and style in {"party", "horror"}:
+        if style == "full_brightness":
+            if "brightness" in caps:
+                data["brightness"] = 255
+            if "color_temp" in caps:
+                attrs = _light_attrs(entity)
+                target_kelvin = attrs.get("max_color_temp_kelvin") or 6500
+                data["color_temp_kelvin"] = _clamp_kelvin(entity, int(target_kelvin))
+            for key in ("effect", "rgb_color", "xy_color", "color_temp"):
+                data.pop(key, None)
+            warnings.append(f"Tuned {entity_id} for full brightness with clean white light")
+        elif chosen_effect and style in {"party", "horror"}:
             data["effect"] = chosen_effect
             for key in ("color_temp", "color_temp_kelvin", "rgb_color", "xy_color"):
                 data.pop(key, None)
             if "brightness" in caps:
                 data["brightness"] = 170 if style == "party" else 70
             warnings.append(f"Selected supported {style} effect '{chosen_effect}' for {entity_id}")
+        elif style in {"party", "horror"} and "rgb_color" in caps and data.get("rgb_color") and _has_timing(tuned):
+            data.pop("effect", None)
+            data.pop("color_temp", None)
+            data.pop("color_temp_kelvin", None)
+            if "brightness" in caps and "brightness" not in data:
+                data["brightness"] = 185 if style == "party" else 55
+            warnings.append(f"Preserved timed {style} RGB phase for {entity_id}")
         elif style in {"party", "horror"} and "rgb_color" in caps:
             palette = STYLE_PALETTES[style]
             data["rgb_color"] = palette[_stable_index(str(entity_id), len(palette))]
@@ -555,32 +705,47 @@ def _tune_action_for_scene(
                 data.pop("effect", None)
 
     rationale = str(tuned.get("rationale") or "").strip()
-    if not rationale or any(word in rationale.lower() for word in ("living room", "fan", "tv", "television", "hallway")):
+    weak_rationale = (
+        not rationale
+        or len(rationale.split()) <= 2
+        or rationale.lower().replace(" ", "_") in {str(entity_id).split(".", 1)[-1].lower(), str(entity_id).lower()}
+    )
+    if weak_rationale or any(word in rationale.lower() for word in ("living room", "fan", "tv", "television", "hallway")):
         tuned["rationale"] = f"Set {label} for {scene.get('scene_name') or scene.get('intent') or 'the requested scene'}"
 
     tuned["data"] = data
     return tuned
 
 
+def _has_timing(action: Dict[str, Any]) -> bool:
+    return any(action.get(field) for field in TIMING_FIELDS)
+
+
 def _dedupe_actions(actions: List[Dict[str, Any]], warnings: List[str]) -> List[Dict[str, Any]]:
-    deduped: Dict[tuple[str, str, str], Dict[str, Any]] = {}
-    ordered_keys: List[tuple[str, str, str]] = []
+    deduped_indexes: Dict[tuple[str, str, str], int] = {}
+    result: List[Dict[str, Any]] = []
 
     for action in actions:
         key = (action.get("entity_id"), action.get("domain"), action.get("service"))
-        if key not in deduped:
-            deduped[key] = action
-            ordered_keys.append(key)
+        if _has_timing(action) or key not in deduped_indexes:
+            if not _has_timing(action):
+                deduped_indexes[key] = len(result)
+            result.append(action)
             continue
 
-        existing = deduped[key]
+        existing = result[deduped_indexes[key]]
         existing["data"] = {**(existing.get("data") or {}), **(action.get("data") or {})}
         existing["priority"] = max(existing.get("priority", 0), action.get("priority", 0))
+        for timing_field in TIMING_FIELDS:
+            if timing_field not in existing and timing_field in action:
+                existing[timing_field] = action[timing_field]
+            elif timing_field == "repeat" and timing_field in action:
+                existing[timing_field] = max(existing.get(timing_field, 1), action[timing_field])
         if action.get("rationale") and not existing.get("rationale"):
             existing["rationale"] = action.get("rationale")
         warnings.append(f"Merged duplicate {key[1]}.{key[2]} action for {key[0]}")
 
-    return [deduped[key] for key in ordered_keys]
+    return result
 
 
 def validate_and_normalize(raw: Any, available_entities: List[Dict[str, Any]]) -> ValidationResult:
@@ -625,6 +790,9 @@ def validate_and_normalize(raw: Any, available_entities: List[Dict[str, Any]]) -
         caps = _normalize_caps(entity_map[eid])
         a = _tune_action_for_scene(a, raw, entity_map[eid], caps, warnings)
         data = dict(a.get("data", {}) or {})
+        timing = _normalize_action_timing(a, warnings, eid)
+        if domain == "light" and service == "turn_on" and timing.get("duration_ms") and data.get("transition") is None:
+            data["transition"] = round(timing["duration_ms"] / 1000, 2)
 
         try:
             data = _normalize_action_data(
@@ -639,14 +807,16 @@ def validate_and_normalize(raw: Any, available_entities: List[Dict[str, Any]]) -
             errors.append(str(exc))
             continue
 
-        normalized_actions.append({
+        normalized_action = {
             "entity_id": eid,
             "domain": domain,
             "service": service,
             "data": data,
             "rationale": a.get("rationale"),
             "priority": a.get("priority", 0),
-        })
+        }
+        normalized_action.update(timing)
+        normalized_actions.append(normalized_action)
 
     if errors:
         return ValidationResult(False, errors=errors)
