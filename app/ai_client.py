@@ -125,31 +125,30 @@ async def _call_ai_provider(prompt: str, settings) -> Dict[str, Any]:
             timeout=settings.request_timeout,
             max_retries=0,
         )
-        response = await client.chat.completions.create(
+        stream = await client.chat.completions.create(
             model=settings.model,
             messages=[{"role": "user", "content": prompt}],
             temperature=settings.temperature,
             max_tokens=settings.max_tokens,
             extra_body={"chat_template_kwargs": {"thinking": False}},
+            stream=True,
         )
+        chunks: list[str] = []
+        async for chunk in stream:
+            if not getattr(chunk, "choices", None):
+                continue
+            delta = getattr(chunk.choices[0], "delta", None)
+            content = delta.get("content") if isinstance(delta, dict) else getattr(delta, "content", None)
+            if content:
+                chunks.append(content)
     except Exception as exc:
         if exc.__class__.__name__ == "APITimeoutError":
             raise AIProviderTimeout(f"AI provider timed out after {settings.request_timeout:g}s") from exc
         raise AIProviderError(f"AI provider request failed: {exc.__class__.__name__}") from exc
 
-    if not getattr(response, "choices", None):
-        raise AIProviderError("AI provider returned no choices")
-
-    first = response.choices[0]
-    if getattr(first, "message", None):
-        message = first.message
-        content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-    elif getattr(first, "delta", None):
-        delta = first.delta
-        content = delta.get("content") if isinstance(delta, dict) else getattr(delta, "content", None)
-    else:
-        content = str(first)
-
+    content = "".join(chunks).strip()
+    if not content:
+        raise AIProviderError("AI provider returned empty content")
     return _extract_json_object(content)
 
 

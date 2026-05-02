@@ -2,7 +2,7 @@ name: "Syn"
 description: >-
   AI-assisted scene creation for Home Assistant using room entities, lights,
   switches, TVs, media players, and natural language prompts.
-version: "0.2.7"
+version: "0.2.8"
 slug: "syn"
 url: "https://github.com/architechlabs/syn"
 init: false
@@ -32,12 +32,12 @@ environment:
 options:
   api_key: ""
   base_url: "https://integrate.api.nvidia.com/v1"
-  model: "deepseek-ai/deepseek-v4-pro"
+  model: "deepseek-ai/deepseek-v4-flash"
   temperature: 0.0
   request_timeout: 30
   max_tokens: 1800
   fallback_on_error: true
-  ha_url: "http://supervisor/core/api"
+  ha_url: ""
   ha_token: ""
   port: 8000
   log_level: "INFO"
@@ -49,7 +49,7 @@ schema:
   request_timeout: "int(5,120)"
   max_tokens: "int(256,8192)"
   fallback_on_error: "bool"
-  ha_url: "url"
+  ha_url: "str?"
   ha_token: "password?"
   port: port
   log_level: "list(DEBUG|INFO|WARNING|ERROR)"

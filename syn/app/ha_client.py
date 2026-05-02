@@ -12,6 +12,7 @@ from .settings import DEFAULT_OPTIONS_PATH, _read_options, mask_secret
 
 SUPPORTED_DOMAINS = {"light", "switch", "fan", "media_player", "climate", "cover"}
 DEFAULT_HA_API_URL = "http://supervisor/core/api"
+DEFAULT_MANUAL_HA_API_URL = "http://homeassistant:8123/api"
 DEFAULT_HA_CONFIG_PATH = Path("/config")
 
 
@@ -40,10 +41,15 @@ def load_ha_api_settings() -> HAApiSettings:
     ).strip()
     token = manual_token or supervisor_token
     source = "manual" if manual_token else "supervisor" if supervisor_token else "missing"
-    base_url = (
-        os.getenv("HA_API_URL")
-        or str(options.get("ha_url") or DEFAULT_HA_API_URL)
-    ).rstrip("/")
+    configured_url = (os.getenv("HA_API_URL") or str(options.get("ha_url") or "")).strip()
+    if manual_token and configured_url.rstrip("/") == DEFAULT_HA_API_URL:
+        base_url = DEFAULT_MANUAL_HA_API_URL
+    elif configured_url:
+        base_url = configured_url.rstrip("/")
+    elif manual_token:
+        base_url = DEFAULT_MANUAL_HA_API_URL
+    else:
+        base_url = DEFAULT_HA_API_URL
     return HAApiSettings(
         base_url=base_url,
         token=token,

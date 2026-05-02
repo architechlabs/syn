@@ -9,6 +9,7 @@ from .ha_client import load_ha_api_settings
 from .ha_client import list_areas, list_entities
 from .validator import validate_and_normalize
 from .storage import SceneStorage
+from .storage import BASE as SCENES_PATH
 from .logger import get_logger
 from .settings import load_ai_settings, mask_secret
 from .version_sync import (
@@ -71,6 +72,9 @@ async def config_status():
         "max_tokens": settings.max_tokens,
         "fallback_on_error": settings.fallback_on_error,
         "options_path": str(settings.options_path),
+        "storage": {
+            "draft_scene_path": SCENES_PATH,
+        },
         "home_assistant": {
             "api_url": ha_settings.base_url,
             "token_configured": ha_settings.configured,
@@ -157,7 +161,7 @@ async def generate_scene(request: ScenePlanRequest):
     scene = validated.normalized
     # persist draft
     scene_id = await storage.save_scene(scene)
-    logger.info("Scene draft saved: %s", scene_id)
+    logger.info("Scene draft saved: %s at %s", scene_id, SCENES_PATH)
     return ScenePlanResponse.from_dict({"scene": scene, "scene_id": scene_id, "warnings": validated.warnings})
 
 

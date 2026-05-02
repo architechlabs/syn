@@ -6,7 +6,8 @@ import uuid
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
-BASE = os.path.join(os.path.dirname(__file__), "data")
+DEFAULT_DATA_ROOT = "/data" if os.name != "nt" else os.path.dirname(__file__)
+BASE = os.getenv("SYN_SCENES_PATH", os.path.join(DEFAULT_DATA_ROOT, "scenes"))
 os.makedirs(BASE, exist_ok=True)
 
 

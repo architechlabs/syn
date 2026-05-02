@@ -11,7 +11,7 @@ from typing import Any
 
 DEFAULT_OPTIONS_PATH = Path("/data/options.json")
 DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
-DEFAULT_MODEL = "deepseek-ai/deepseek-v4-pro"
+DEFAULT_MODEL = "deepseek-ai/deepseek-v4-flash"
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_REQUEST_TIMEOUT = 30.0
 DEFAULT_MAX_TOKENS = 1800
