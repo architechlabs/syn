@@ -406,8 +406,18 @@ async def execute_scene_actions(scene: dict[str, Any]) -> dict[str, Any]:
             "actions": [],
         }
 
+    actions = scene.get("actions", []) or []
+    if not actions:
+        return {
+            "overall_status": "failed",
+            "message": "Scene has no executable actions.",
+            "actions": [],
+            "actions_executed": 0,
+            "actions_failed": 0,
+        }
+
     results = []
-    for action in scene.get("actions", []) or []:
+    for action in actions:
         domain = action.get("domain")
         service = action.get("service")
         entity_id = action.get("entity_id")
@@ -418,21 +428,33 @@ async def execute_scene_actions(scene: dict[str, Any]) -> dict[str, Any]:
         payload.update(action.get("data") or {})
         try:
             await _post_json(f"/services/{domain}/{service}", payload, settings)
-            results.append({"entity_id": entity_id, "service": f"{domain}.{service}", "status": "success"})
+            results.append(
+                {
+                    "entity_id": entity_id,
+                    "service": f"{domain}.{service}",
+                    "data": action.get("data") or {},
+                    "status": "success",
+                }
+            )
         except Exception as exc:
             results.append(
                 {
                     "entity_id": entity_id,
                     "service": f"{domain}.{service}",
+                    "data": action.get("data") or {},
                     "status": "failed",
-                    "message": exc.__class__.__name__,
+                    "message": _api_failure_message(exc),
                 }
             )
 
     failed = [result for result in results if result["status"] == "failed"]
+    skipped = [result for result in results if result["status"] == "skipped"]
+    succeeded = [result for result in results if result["status"] == "success"]
+    status = "success" if succeeded and not failed and not skipped else "failed"
     return {
-        "overall_status": "failed" if failed else "success",
+        "overall_status": status,
+        "message": f"Applied {len(succeeded)} of {len(actions)} scene actions.",
         "actions": results,
-        "actions_executed": len([result for result in results if result["status"] == "success"]),
+        "actions_executed": len(succeeded),
         "actions_failed": len(failed),
     }

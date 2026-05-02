@@ -37,8 +37,12 @@ Output requirements:
 - Every action object must include entity_id exactly as listed above, for example "light.dining_pendant"; never use a friendly name in place of entity_id.
 - entity_map must be an object keyed by entity_id. Each value must include entity_id, domain, and capabilities.
 - Use only entity_id values listed above.
+- Do not create actions for domains or devices that are not in the selected entities list.
+- For a single light scene, return one light.turn_on action, not duplicates.
+- For cozy/movie/night/relax prompts, use dim warm lighting: brightness 35-90 on the Home Assistant 0-255 scale when brightness is supported.
 - Prefer fewer, reliable actions over many speculative ones.
 - Put important setup actions first by using higher priority values.
+- Rationale must describe the selected entity, not a guessed room or device.
 
 Do not invent entities or capabilities. If an action cannot be performed, list it in warnings and either downgrade action safely or omit it.
 

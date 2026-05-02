@@ -108,6 +108,23 @@ def _entity_summary(entity: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _entity_label(entity: Dict[str, Any]) -> str:
+    return str(
+        entity.get("name")
+        or (entity.get("state") or {}).get("attributes", {}).get("friendly_name")
+        or entity.get("entity_id")
+        or "selected device"
+    )
+
+
+def _is_dim_scene(scene: Dict[str, Any]) -> bool:
+    text = " ".join(
+        str(scene.get(key) or "")
+        for key in ("scene_name", "description", "intent", "target_room")
+    ).lower()
+    return any(word in text for word in ("movie", "cinema", "cozy", "cosy", "night", "relax", "dim", "sleep"))
+
+
 def _infer_entity_id(action: Dict[str, Any], entity_map: Dict[str, Dict[str, Any]]) -> str | None:
     candidates = list(entity_map)
     if action.get("entity_id") in entity_map:
@@ -356,6 +373,61 @@ def _normalize_action_data(
     return normalized
 
 
+def _tune_action_for_scene(
+    action: Dict[str, Any],
+    scene: Dict[str, Any],
+    entity: Dict[str, Any],
+    caps: set[str],
+    warnings: List[str],
+) -> Dict[str, Any]:
+    tuned = dict(action)
+    data = dict(tuned.get("data") or {})
+    entity_id = tuned.get("entity_id")
+    label = _entity_label(entity)
+
+    if tuned.get("domain") == "light" and tuned.get("service") == "turn_on" and _is_dim_scene(scene):
+        if "brightness" in caps:
+            old_brightness = data.get("brightness")
+            if old_brightness is None or (
+                isinstance(old_brightness, int)
+                and 0 <= old_brightness <= 255
+                and old_brightness > 90
+            ):
+                data["brightness"] = 64
+                warnings.append(f"Tuned {entity_id} brightness for a cozy/movie/night scene")
+        if "color_temp" in caps and "color_temp" not in data:
+            data["color_temp"] = 370
+            warnings.append(f"Added warm color temperature for {entity_id}")
+
+    rationale = str(tuned.get("rationale") or "").strip()
+    if not rationale or any(word in rationale.lower() for word in ("living room", "fan", "tv", "television", "hallway")):
+        tuned["rationale"] = f"Set {label} for {scene.get('scene_name') or scene.get('intent') or 'the requested scene'}"
+
+    tuned["data"] = data
+    return tuned
+
+
+def _dedupe_actions(actions: List[Dict[str, Any]], warnings: List[str]) -> List[Dict[str, Any]]:
+    deduped: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+    ordered_keys: List[tuple[str, str, str]] = []
+
+    for action in actions:
+        key = (action.get("entity_id"), action.get("domain"), action.get("service"))
+        if key not in deduped:
+            deduped[key] = action
+            ordered_keys.append(key)
+            continue
+
+        existing = deduped[key]
+        existing["data"] = {**(existing.get("data") or {}), **(action.get("data") or {})}
+        existing["priority"] = max(existing.get("priority", 0), action.get("priority", 0))
+        if action.get("rationale") and not existing.get("rationale"):
+            existing["rationale"] = action.get("rationale")
+        warnings.append(f"Merged duplicate {key[1]}.{key[2]} action for {key[0]}")
+
+    return [deduped[key] for key in ordered_keys]
+
+
 def validate_and_normalize(raw: Any, available_entities: List[Dict[str, Any]]) -> ValidationResult:
     schema_path = os.path.join(os.path.dirname(__file__), "schema", "scene_schema.json")
     with open(schema_path, "r", encoding="utf-8") as fh:
@@ -395,13 +467,17 @@ def validate_and_normalize(raw: Any, available_entities: List[Dict[str, Any]]) -
             errors.append(f"Unsupported service '{service}' for domain '{domain}'")
             continue
 
+        caps = _normalize_caps(entity_map[eid])
+        a = _tune_action_for_scene(a, raw, entity_map[eid], caps, warnings)
+        data = dict(a.get("data", {}) or {})
+
         try:
             data = _normalize_action_data(
                 eid,
                 domain,
                 service,
                 data,
-                _normalize_caps(entity_map[eid]),
+                caps,
                 warnings,
             )
         except ValueError as exc:
@@ -421,6 +497,7 @@ def validate_and_normalize(raw: Any, available_entities: List[Dict[str, Any]]) -
         return ValidationResult(False, errors=errors)
 
     normalized = raw.copy()
+    normalized_actions = _dedupe_actions(normalized_actions, warnings)
     normalized["actions"] = sorted(normalized_actions, key=lambda item: item.get("priority", 0), reverse=True)
     normalized["warnings"] = _string_list((normalized.get("warnings") or []) + warnings)
     return ValidationResult(True, normalized=normalized, warnings=warnings)

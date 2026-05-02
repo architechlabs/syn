@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional
 class Entity(BaseModel):
     entity_id: str
     domain: str
+    name: Optional[str] = None
     capabilities: List[str] = []
     state: Dict[str, Any] = {}
     room: Optional[str] = None
