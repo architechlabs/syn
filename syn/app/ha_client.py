@@ -61,7 +61,9 @@ def _api_failure_message(exc: Exception) -> str:
     response = getattr(exc, "response", None)
     status_code = getattr(response, "status_code", None)
     if status_code:
-        return f"Home Assistant API returned HTTP {status_code}"
+        body = getattr(response, "text", "") or ""
+        detail = f": {body[:220]}" if body else ""
+        return f"Home Assistant API returned HTTP {status_code}{detail}"
     return f"Home Assistant API failed: {exc.__class__.__name__}"
 
 
@@ -74,7 +76,7 @@ def _capabilities(domain: str, attrs: dict[str, Any]) -> list[str]:
             caps.add("brightness")
         if "color_temp" in attrs or "color_temp" in supported_color_modes or "min_color_temp_kelvin" in attrs:
             caps.add("color_temp")
-        if "rgb_color" in attrs or {"rgb", "hs"} & supported_color_modes:
+        if "rgb_color" in attrs or {"rgb", "rgbw", "rgbww", "hs"} & supported_color_modes:
             caps.add("rgb_color")
         if "xy_color" in attrs or "xy" in supported_color_modes:
             caps.add("xy_color")
@@ -248,6 +250,46 @@ async def _post_json(path: str, payload: dict[str, Any], settings: HAApiSettings
         if not response.content:
             return {}
         return response.json()
+
+
+def _clean_service_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    cleaned = {key: value for key, value in payload.items() if value is not None}
+    if "color_temp" in cleaned and isinstance(cleaned["color_temp"], int) and cleaned["color_temp"] > 1000:
+        cleaned["color_temp_kelvin"] = cleaned.pop("color_temp")
+    if cleaned.get("effect"):
+        for key in ("color_temp", "color_temp_kelvin", "rgb_color", "xy_color", "hs_color"):
+            cleaned.pop(key, None)
+    elif "effect" in cleaned:
+        cleaned.pop("effect", None)
+    return cleaned
+
+
+def _retry_payloads(domain: str, service: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    primary = _clean_service_payload(payload)
+    attempts = [primary]
+    if domain == "light" and service == "turn_on":
+        without_effect = dict(primary)
+        without_effect.pop("effect", None)
+        if without_effect != primary:
+            attempts.append(without_effect)
+
+        without_color = dict(without_effect)
+        for key in ("color_temp", "color_temp_kelvin", "rgb_color", "xy_color", "hs_color"):
+            without_color.pop(key, None)
+        if without_color != attempts[-1]:
+            attempts.append(without_color)
+
+        minimal = {"entity_id": primary["entity_id"]}
+        if "brightness" in primary:
+            minimal["brightness"] = primary["brightness"]
+        if minimal != attempts[-1]:
+            attempts.append(minimal)
+
+    unique: list[dict[str, Any]] = []
+    for attempt in attempts:
+        if attempt not in unique:
+            unique.append(attempt)
+    return unique
 
 
 async def _try_get_json(path: str, settings: HAApiSettings) -> Any:
@@ -426,22 +468,46 @@ async def execute_scene_actions(scene: dict[str, Any]) -> dict[str, Any]:
             continue
         payload = {"entity_id": entity_id}
         payload.update(action.get("data") or {})
+        attempts = _retry_payloads(domain, service, payload)
+        last_exc: Exception | None = None
         try:
-            await _post_json(f"/services/{domain}/{service}", payload, settings)
-            results.append(
-                {
-                    "entity_id": entity_id,
-                    "service": f"{domain}.{service}",
-                    "data": action.get("data") or {},
-                    "status": "success",
-                }
-            )
+            applied_payload = attempts[0]
+            for index, attempt in enumerate(attempts):
+                try:
+                    await _post_json(f"/services/{domain}/{service}", attempt, settings)
+                    applied_payload = attempt
+                    if index > 0:
+                        results.append(
+                            {
+                                "entity_id": entity_id,
+                                "service": f"{domain}.{service}",
+                                "data": applied_payload,
+                                "status": "success",
+                                "message": "Applied after simplifying unsupported light data",
+                            }
+                        )
+                    else:
+                        results.append(
+                            {
+                                "entity_id": entity_id,
+                                "service": f"{domain}.{service}",
+                                "data": applied_payload,
+                                "status": "success",
+                            }
+                        )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+            if last_exc:
+                raise last_exc
+            continue
         except Exception as exc:
             results.append(
                 {
                     "entity_id": entity_id,
                     "service": f"{domain}.{service}",
-                    "data": action.get("data") or {},
+                    "data": attempts[0],
                     "status": "failed",
                     "message": _api_failure_message(exc),
                 }

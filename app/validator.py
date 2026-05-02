@@ -50,6 +50,29 @@ CAPABILITY_ALIASES = {
     "speed": "percentage",
 }
 
+STYLE_PALETTES = {
+    "party": [
+        [255, 0, 120],
+        [0, 180, 255],
+        [140, 0, 255],
+        [0, 255, 120],
+        [255, 180, 0],
+        [255, 40, 40],
+    ],
+    "horror": [
+        [170, 0, 0],
+        [85, 0, 130],
+        [20, 0, 80],
+        [255, 35, 0],
+        [110, 0, 35],
+    ],
+}
+
+EFFECT_PREFERENCES = {
+    "party": ("party", "club", "pulse", "rainbow", "color", "flow", "dynamic", "dance"),
+    "horror": ("candle", "fire", "pulse", "night", "mystic", "storm", "spooky"),
+}
+
 
 def _as_dict(value: Any) -> Dict[str, Any]:
     if hasattr(value, "model_dump"):
@@ -83,14 +106,19 @@ def _string_list(value: Any) -> List[str]:
 def _normalize_caps(entity: Dict[str, Any]) -> set[str]:
     caps = set(entity.get("capabilities", []) or [])
     attrs = (entity.get("state") or {}).get("attributes", {}) or {}
+    supported_color_modes = set(attrs.get("supported_color_modes") or [])
     if entity.get("domain") in {"light", "switch", "fan", "media_player"}:
         caps.add("on_off")
-    if "brightness" in attrs:
+    if "brightness" in attrs or "brightness" in supported_color_modes:
         caps.add("brightness")
-    if "color_temp" in attrs or "min_color_temp" in attrs:
+    if "color_temp" in attrs or "min_color_temp" in attrs or "min_color_temp_kelvin" in attrs or "color_temp" in supported_color_modes:
         caps.add("color_temp")
-    if "rgb_color" in attrs or "xy_color" in attrs:
+    if "rgb_color" in attrs or "xy_color" in attrs or {"rgb", "rgbw", "rgbww", "hs"} & supported_color_modes:
         caps.add("rgb_color")
+    if "xy_color" in attrs or "xy" in supported_color_modes:
+        caps.add("xy_color")
+    if attrs.get("effect_list"):
+        caps.add("effect")
     if "volume_level" in attrs:
         caps.add("volume")
     if "source_list" in attrs:
@@ -100,12 +128,75 @@ def _normalize_caps(entity: Dict[str, Any]) -> set[str]:
     return {CAPABILITY_ALIASES.get(cap, cap) for cap in caps}
 
 
+def _light_attrs(entity: Dict[str, Any]) -> Dict[str, Any]:
+    attrs = (entity.get("state") or {}).get("attributes", {}) or {}
+    return attrs if isinstance(attrs, dict) else {}
+
+
+def _effect_list(entity: Dict[str, Any]) -> List[str]:
+    effect_list = _light_attrs(entity).get("effect_list") or []
+    return [str(effect) for effect in effect_list if effect]
+
+
+def _choose_effect(style: str, entity: Dict[str, Any]) -> str | None:
+    effects = _effect_list(entity)
+    preferences = EFFECT_PREFERENCES.get(style, ())
+    for wanted in preferences:
+        for effect in effects:
+            if wanted in effect.lower():
+                return effect
+    return None
+
+
+def _scene_style(scene: Dict[str, Any]) -> str:
+    text = " ".join(
+        str(scene.get(key) or "")
+        for key in ("scene_name", "description", "intent", "target_room")
+    ).lower()
+    if any(word in text for word in ("party", "dance", "club", "disco", "celebration", "rainbow")):
+        return "party"
+    if any(word in text for word in ("horror", "scary", "spooky", "haunted", "creepy", "blood", "eerie")):
+        return "horror"
+    if any(word in text for word in ("office", "work", "focus", "study", "productive", "reading")):
+        return "office"
+    if any(word in text for word in ("movie", "cinema", "cozy", "cosy", "night", "relax", "dim", "sleep")):
+        return "cozy"
+    return "general"
+
+
+def _stable_index(value: str, size: int) -> int:
+    if size <= 0:
+        return 0
+    return sum(ord(char) for char in value) % size
+
+
+def _clamp_kelvin(entity: Dict[str, Any], kelvin: int) -> int:
+    attrs = _light_attrs(entity)
+    minimum = attrs.get("min_color_temp_kelvin") or 2000
+    maximum = attrs.get("max_color_temp_kelvin") or 6500
+    try:
+        minimum = int(minimum)
+        maximum = int(maximum)
+    except (TypeError, ValueError):
+        minimum, maximum = 2000, 6500
+    return max(minimum, min(maximum, int(kelvin)))
+
+
 def _entity_summary(entity: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    summary = {
         "entity_id": entity.get("entity_id"),
         "domain": entity.get("domain"),
         "capabilities": sorted(_normalize_caps(entity)),
     }
+    effects = _effect_list(entity)
+    if effects:
+        summary["effects"] = effects
+    attrs = _light_attrs(entity)
+    if "min_color_temp_kelvin" in attrs:
+        summary["min_color_temp_kelvin"] = attrs.get("min_color_temp_kelvin")
+    if "max_color_temp_kelvin" in attrs:
+        summary["max_color_temp_kelvin"] = attrs.get("max_color_temp_kelvin")
+    return summary
 
 
 def _entity_label(entity: Dict[str, Any]) -> str:
@@ -118,11 +209,7 @@ def _entity_label(entity: Dict[str, Any]) -> str:
 
 
 def _is_dim_scene(scene: Dict[str, Any]) -> bool:
-    text = " ".join(
-        str(scene.get(key) or "")
-        for key in ("scene_name", "description", "intent", "target_room")
-    ).lower()
-    return any(word in text for word in ("movie", "cinema", "cozy", "cosy", "night", "relax", "dim", "sleep"))
+    return _scene_style(scene) == "cozy"
 
 
 def _infer_entity_id(action: Dict[str, Any], entity_map: Dict[str, Dict[str, Any]]) -> str | None:
@@ -299,12 +386,18 @@ def _normalize_action_data(
     caps: set[str],
     warnings: List[str],
 ) -> Dict[str, Any]:
-    normalized = dict(data or {})
+    normalized = {key: value for key, value in dict(data or {}).items() if value is not None}
 
     if domain == "light":
         if "color" in normalized and "rgb_color" not in normalized:
             normalized["rgb_color"] = normalized.pop("color")
-        allowed_keys = {"brightness", "color_temp", "rgb_color", "xy_color", "effect", "transition"}
+        if "color_temp" in normalized:
+            color_temp = normalized["color_temp"]
+            if isinstance(color_temp, int) and color_temp > 1000:
+                normalized["color_temp_kelvin"] = color_temp
+                normalized.pop("color_temp", None)
+                warnings.append(f"Converted Kelvin color_temp to color_temp_kelvin for {entity_id}")
+        allowed_keys = {"brightness", "color_temp", "color_temp_kelvin", "rgb_color", "xy_color", "effect", "transition"}
         for key in list(normalized):
             if key not in allowed_keys:
                 warnings.append(f"Removed unsupported light data '{key}' for {entity_id}")
@@ -319,6 +412,9 @@ def _normalize_action_data(
         if "color_temp" in normalized and "color_temp" not in caps:
             warnings.append(f"Entity {entity_id} has no color_temp capability; removing color_temp")
             normalized.pop("color_temp", None)
+        if "color_temp_kelvin" in normalized and "color_temp" not in caps:
+            warnings.append(f"Entity {entity_id} has no color_temp capability; removing color_temp_kelvin")
+            normalized.pop("color_temp_kelvin", None)
         if "rgb_color" in normalized:
             rgb = normalized["rgb_color"]
             if not (
@@ -330,6 +426,15 @@ def _normalize_action_data(
             if "rgb_color" not in caps:
                 warnings.append(f"Entity {entity_id} has no rgb_color capability; removing rgb_color")
                 normalized.pop("rgb_color", None)
+        if "effect" in normalized and "effect" not in caps:
+            warnings.append(f"Entity {entity_id} has no effect capability; removing effect")
+            normalized.pop("effect", None)
+        if "effect" in normalized:
+            normalized.pop("color_temp", None)
+            normalized.pop("color_temp_kelvin", None)
+            normalized.pop("rgb_color", None)
+            normalized.pop("xy_color", None)
+            warnings.append(f"Using effect mode only for {entity_id}; removed conflicting color data")
 
     elif domain == "media_player":
         allowed_keys = {"volume_level", "is_volume_muted", "source", "media_content_id", "media_content_type"}
@@ -384,20 +489,70 @@ def _tune_action_for_scene(
     data = dict(tuned.get("data") or {})
     entity_id = tuned.get("entity_id")
     label = _entity_label(entity)
+    style = _scene_style(scene)
 
-    if tuned.get("domain") == "light" and tuned.get("service") == "turn_on" and _is_dim_scene(scene):
-        if "brightness" in caps:
-            old_brightness = data.get("brightness")
-            if old_brightness is None or (
-                isinstance(old_brightness, int)
-                and 0 <= old_brightness <= 255
-                and old_brightness > 90
-            ):
-                data["brightness"] = 64
-                warnings.append(f"Tuned {entity_id} brightness for a cozy/movie/night scene")
-        if "color_temp" in caps and "color_temp" not in data:
-            data["color_temp"] = 370
-            warnings.append(f"Added warm color temperature for {entity_id}")
+    if tuned.get("domain") == "light" and tuned.get("service") == "turn_on":
+        data.pop("transition", None)
+        if "effect" in data and not data.get("effect"):
+            data.pop("effect", None)
+
+        chosen_effect = _choose_effect(style, entity) if "effect" in caps else None
+        if chosen_effect and style in {"party", "horror"}:
+            data["effect"] = chosen_effect
+            for key in ("color_temp", "color_temp_kelvin", "rgb_color", "xy_color"):
+                data.pop(key, None)
+            if "brightness" in caps:
+                data["brightness"] = 170 if style == "party" else 70
+            warnings.append(f"Selected supported {style} effect '{chosen_effect}' for {entity_id}")
+        elif style in {"party", "horror"} and "rgb_color" in caps:
+            palette = STYLE_PALETTES[style]
+            data["rgb_color"] = palette[_stable_index(str(entity_id), len(palette))]
+            data.pop("effect", None)
+            data.pop("color_temp", None)
+            data.pop("color_temp_kelvin", None)
+            if "brightness" in caps:
+                data["brightness"] = 185 if style == "party" else 55
+            warnings.append(f"Applied {style} RGB palette for {entity_id}")
+        elif style == "office":
+            if "brightness" in caps:
+                data["brightness"] = 190
+            if "color_temp" in caps:
+                data["color_temp_kelvin"] = _clamp_kelvin(entity, 4200)
+                data.pop("color_temp", None)
+            for key in ("effect", "rgb_color", "xy_color"):
+                data.pop(key, None)
+            warnings.append(f"Tuned {entity_id} for focused office lighting")
+        elif style == "cozy":
+            if "brightness" in caps:
+                old_brightness = data.get("brightness")
+                if old_brightness is None or (
+                    isinstance(old_brightness, int)
+                    and 0 <= old_brightness <= 255
+                    and old_brightness > 90
+                ):
+                    data["brightness"] = 64
+                    warnings.append(f"Tuned {entity_id} brightness for a cozy/movie/night scene")
+            if "color_temp" in caps:
+                data["color_temp_kelvin"] = _clamp_kelvin(entity, 2700)
+                data.pop("color_temp", None)
+                warnings.append(f"Added warm color temperature for {entity_id}")
+
+        if "color_temp" in data and isinstance(data["color_temp"], int) and data["color_temp"] > 1000:
+            data["color_temp_kelvin"] = _clamp_kelvin(entity, data["color_temp"])
+            data.pop("color_temp", None)
+
+        if "color_temp_kelvin" in data and isinstance(data["color_temp_kelvin"], int):
+            data["color_temp_kelvin"] = _clamp_kelvin(entity, data["color_temp_kelvin"])
+
+        effects = _effect_list(entity)
+        if data.get("effect") and effects and data["effect"] not in effects:
+            fallback_effect = _choose_effect(style, entity)
+            if fallback_effect:
+                warnings.append(f"Replaced unsupported effect '{data['effect']}' with '{fallback_effect}' for {entity_id}")
+                data["effect"] = fallback_effect
+            else:
+                warnings.append(f"Removed unsupported effect '{data['effect']}' for {entity_id}")
+                data.pop("effect", None)
 
     rationale = str(tuned.get("rationale") or "").strip()
     if not rationale or any(word in rationale.lower() for word in ("living room", "fan", "tv", "television", "hallway")):
