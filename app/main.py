@@ -67,6 +67,8 @@ async def config_status():
         "api_key": mask_secret(settings.api_key),
         "base_url": settings.base_url,
         "model": settings.model,
+        "provider_preset": settings.provider_preset,
+        "enable_thinking": settings.enable_thinking,
         "temperature": settings.temperature,
         "request_timeout": settings.request_timeout,
         "max_tokens": settings.max_tokens,
@@ -131,11 +133,15 @@ async def sync_versions_on_startup() -> None:
 
     settings = load_ai_settings()
     logger.info(
-        "AI settings loaded from %s: api_key=%s model=%s temperature=%s",
+        "AI settings loaded from %s: api_key=%s model=%s preset=%s thinking=%s temperature=%s timeout=%ss max_tokens=%s",
         settings.options_path,
         mask_secret(settings.api_key),
         settings.model,
+        settings.provider_preset,
+        settings.enable_thinking,
         settings.temperature,
+        settings.request_timeout,
+        settings.max_tokens,
     )
 
 

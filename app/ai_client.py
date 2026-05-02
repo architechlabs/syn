@@ -16,6 +16,53 @@ class AIProviderError(RuntimeError):
     """Raised when the configured AI provider fails."""
 
 
+def _provider_kind(settings) -> str:
+    preset = getattr(settings, "provider_preset", "auto")
+    if preset and preset != "auto":
+        return preset
+
+    model = settings.model.lower()
+    if model.startswith("z-ai/") or "glm" in model:
+        return "glm"
+    if "deepseek" in model:
+        return "deepseek"
+    return "generic"
+
+
+def _chat_completion_kwargs(prompt: str, settings) -> dict[str, Any]:
+    """Build provider-specific chat parameters without leaking provider quirks elsewhere."""
+
+    kwargs: dict[str, Any] = {
+        "model": settings.model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": settings.temperature,
+        "max_tokens": settings.max_tokens,
+        "stream": True,
+    }
+
+    provider = _provider_kind(settings)
+    if provider == "glm":
+        kwargs["top_p"] = 1
+        chat_template_kwargs = {
+            "enable_thinking": bool(getattr(settings, "enable_thinking", False)),
+        }
+        if chat_template_kwargs["enable_thinking"]:
+            chat_template_kwargs["clear_thinking"] = False
+        kwargs["extra_body"] = {
+            "chat_template_kwargs": chat_template_kwargs,
+        }
+    elif provider == "deepseek":
+        kwargs["extra_body"] = {"chat_template_kwargs": {"thinking": False}}
+
+    return kwargs
+
+
+def _delta_content(delta: Any) -> str | None:
+    if isinstance(delta, dict):
+        return delta.get("content")
+    return getattr(delta, "content", None)
+
+
 def _extract_json_object(content: Any) -> Dict[str, Any]:
     """Parse a JSON object from common chat-completion response shapes."""
     if isinstance(content, dict):
@@ -125,20 +172,13 @@ async def _call_ai_provider(prompt: str, settings) -> Dict[str, Any]:
             timeout=settings.request_timeout,
             max_retries=0,
         )
-        stream = await client.chat.completions.create(
-            model=settings.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=settings.temperature,
-            max_tokens=settings.max_tokens,
-            extra_body={"chat_template_kwargs": {"thinking": False}},
-            stream=True,
-        )
+        stream = await client.chat.completions.create(**_chat_completion_kwargs(prompt, settings))
         chunks: list[str] = []
         async for chunk in stream:
             if not getattr(chunk, "choices", None):
                 continue
             delta = getattr(chunk.choices[0], "delta", None)
-            content = delta.get("content") if isinstance(delta, dict) else getattr(delta, "content", None)
+            content = _delta_content(delta)
             if content:
                 chunks.append(content)
     except Exception as exc:

@@ -11,10 +11,16 @@ from typing import Any
 
 DEFAULT_OPTIONS_PATH = Path("/data/options.json")
 DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
-DEFAULT_MODEL = "deepseek-ai/deepseek-v4-flash"
-DEFAULT_TEMPERATURE = 0.0
-DEFAULT_REQUEST_TIMEOUT = 30.0
-DEFAULT_MAX_TOKENS = 1800
+DEFAULT_MODEL = "meta/llama-3.2-3b-instruct"
+LEGACY_DEFAULT_MODELS = {"deepseek-ai/deepseek-v4-pro", "deepseek-ai/deepseek-v4-flash", "z-ai/glm-5.1"}
+DEFAULT_TEMPERATURE = 0.2
+DEFAULT_REQUEST_TIMEOUT = 90.0
+DEFAULT_MAX_TOKENS = 4096
+DEFAULT_PROVIDER_PRESET = "auto"
+DEFAULT_ENABLE_THINKING = False
+LEGACY_DEFAULT_TEMPERATURES = {0, 0.0, "0", "0.0"}
+LEGACY_DEFAULT_TIMEOUTS = {30, 30.0, "30", "30.0"}
+LEGACY_DEFAULT_MAX_TOKENS = {1800, "1800"}
 
 
 @dataclass(frozen=True)
@@ -26,6 +32,8 @@ class AISettings:
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT
     max_tokens: int = DEFAULT_MAX_TOKENS
     fallback_on_error: bool = True
+    provider_preset: str = DEFAULT_PROVIDER_PRESET
+    enable_thinking: bool = DEFAULT_ENABLE_THINKING
     options_path: Path = DEFAULT_OPTIONS_PATH
 
     @property
@@ -75,6 +83,17 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
     return bool(value)
 
 
+def _normalize_model(model: str, env_model: str | None = None) -> str:
+    if env_model:
+        return model or DEFAULT_MODEL
+    return DEFAULT_MODEL if model in LEGACY_DEFAULT_MODELS else model or DEFAULT_MODEL
+
+
+def _normalize_provider_preset(value: str) -> str:
+    preset = (value or DEFAULT_PROVIDER_PRESET).strip().lower()
+    return preset if preset in {"auto", "glm", "deepseek", "generic"} else DEFAULT_PROVIDER_PRESET
+
+
 def load_ai_settings(options_path: Path | None = None) -> AISettings:
     """Load AI settings from env overrides first, then add-on options."""
 
@@ -86,16 +105,26 @@ def load_ai_settings(options_path: Path | None = None) -> AISettings:
         or str(options.get("api_key") or "")
     ).strip()
     base_url = (os.getenv("AI_BASE_URL") or str(options.get("base_url") or DEFAULT_BASE_URL)).strip()
-    model = (os.getenv("AI_MODEL") or str(options.get("model") or DEFAULT_MODEL)).strip()
-    temperature = _coerce_temperature(os.getenv("AI_TEMPERATURE", options.get("temperature", DEFAULT_TEMPERATURE)))
+    env_model = os.getenv("AI_MODEL")
+    model = _normalize_model((env_model or str(options.get("model") or DEFAULT_MODEL)).strip(), env_model)
+    temperature_source = os.getenv("AI_TEMPERATURE", options.get("temperature", DEFAULT_TEMPERATURE))
+    if os.getenv("AI_TEMPERATURE") is None and temperature_source in LEGACY_DEFAULT_TEMPERATURES:
+        temperature_source = DEFAULT_TEMPERATURE
+    temperature = _coerce_temperature(temperature_source)
+    timeout_source = os.getenv("AI_REQUEST_TIMEOUT", options.get("request_timeout", DEFAULT_REQUEST_TIMEOUT))
+    if os.getenv("AI_REQUEST_TIMEOUT") is None and timeout_source in LEGACY_DEFAULT_TIMEOUTS:
+        timeout_source = DEFAULT_REQUEST_TIMEOUT
     request_timeout = _coerce_float(
-        os.getenv("AI_REQUEST_TIMEOUT", options.get("request_timeout", DEFAULT_REQUEST_TIMEOUT)),
+        timeout_source,
         DEFAULT_REQUEST_TIMEOUT,
         5.0,
         120.0,
     )
+    max_tokens_source = os.getenv("AI_MAX_TOKENS", options.get("max_tokens", DEFAULT_MAX_TOKENS))
+    if os.getenv("AI_MAX_TOKENS") is None and max_tokens_source in LEGACY_DEFAULT_MAX_TOKENS:
+        max_tokens_source = DEFAULT_MAX_TOKENS
     max_tokens = _coerce_int(
-        os.getenv("AI_MAX_TOKENS", options.get("max_tokens", DEFAULT_MAX_TOKENS)),
+        max_tokens_source,
         DEFAULT_MAX_TOKENS,
         256,
         8192,
@@ -103,6 +132,14 @@ def load_ai_settings(options_path: Path | None = None) -> AISettings:
     fallback_on_error = _coerce_bool(
         os.getenv("AI_FALLBACK_ON_ERROR", options.get("fallback_on_error", True)),
         default=True,
+    )
+    provider_preset = _normalize_provider_preset(
+        os.getenv("AI_PROVIDER_PRESET")
+        or str(options.get("provider_preset") or DEFAULT_PROVIDER_PRESET)
+    )
+    enable_thinking = _coerce_bool(
+        os.getenv("AI_ENABLE_THINKING", options.get("enable_thinking", DEFAULT_ENABLE_THINKING)),
+        default=DEFAULT_ENABLE_THINKING,
     )
 
     return AISettings(
@@ -113,6 +150,8 @@ def load_ai_settings(options_path: Path | None = None) -> AISettings:
         request_timeout=request_timeout,
         max_tokens=max_tokens,
         fallback_on_error=fallback_on_error,
+        provider_preset=provider_preset,
+        enable_thinking=enable_thinking,
         options_path=resolved_options_path,
     )
 
