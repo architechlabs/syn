@@ -34,6 +34,8 @@ Constraints:
 Output requirements:
 - Return a JSON object with keys: scene_name, description, intent, target_room, actions, confidence, warnings, assumptions, entity_map
 - actions must be a list of objects: entity_id, domain, service, data, rationale, priority
+- Every action object must include entity_id exactly as listed above, for example "light.dining_pendant"; never use a friendly name in place of entity_id.
+- entity_map must be an object keyed by entity_id. Each value must include entity_id, domain, and capabilities.
 - Use only entity_id values listed above.
 - Prefer fewer, reliable actions over many speculative ones.
 - Put important setup actions first by using higher priority values.
