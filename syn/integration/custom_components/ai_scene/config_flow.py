@@ -1,6 +1,6 @@
 from homeassistant import config_entries
 import voluptuous as vol
-from .const import DOMAIN
+from .const import ADDON_DEFAULT_URL, DOMAIN
 
 
 class AIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -21,7 +21,7 @@ class AIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required("addon_url", default="http://localhost:8000"): str,
+                    vol.Required("addon_url", default=ADDON_DEFAULT_URL): str,
                 }
             ),
             errors={},

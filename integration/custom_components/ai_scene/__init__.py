@@ -5,7 +5,7 @@ This module exposes services for preview and commit, and integrates with the add
 import logging
 from typing import Any
 from .services import commit_service, execute_service, generate_service, preview_service
-from .const import ADDON_DEFAULT_URL, DOMAIN
+from .const import ADDON_DEFAULT_URL, DOMAIN, PLATFORMS
 
 try:
     from homeassistant.core import HomeAssistant
@@ -47,8 +47,15 @@ async def async_setup_entry(hass: HomeAssistant, entry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data["ai_scene_addon_url"] = entry.data.get("addon_url") or ADDON_DEFAULT_URL
     await async_setup(hass, {})
+    if hasattr(hass.config_entries, "async_forward_entry_setups"):
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    else:
+        for platform in PLATFORMS:
+            hass.async_create_task(hass.config_entries.async_forward_entry_setup(entry, platform))
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry) -> bool:
+    if hasattr(hass.config_entries, "async_unload_platforms"):
+        return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     return True

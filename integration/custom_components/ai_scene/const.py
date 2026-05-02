@@ -1,2 +1,3 @@
 DOMAIN = "ai_scene"
-ADDON_DEFAULT_URL = "http://localhost:8000"
+ADDON_DEFAULT_URL = "http://syn:8000"
+PLATFORMS = ["scene"]
