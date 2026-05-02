@@ -202,6 +202,9 @@ def _repair_raw_scene(raw: Any, available_entities: List[Dict[str, Any]]) -> tup
             else:
                 warnings.append(f"Omitted action {index + 1} because no entity_id could be inferred")
             continue
+        if eid not in entity_map and entity_map:
+            warnings.append(f"Omitted hallucinated unknown entity {eid}")
+            continue
 
         entity = entity_map.get(eid, {})
         actual_domain = entity.get("domain")
