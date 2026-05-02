@@ -118,6 +118,7 @@ def _infer_entity_id(action: Dict[str, Any], entity_map: Dict[str, Dict[str, Any
         domain_matches = [eid for eid, entity in entity_map.items() if entity.get("domain") == domain]
         if len(domain_matches) == 1:
             return domain_matches[0]
+        return None
 
     for key in ("entity", "target", "name", "device", "friendly_name"):
         value = str(action.get(key) or "").strip().lower()
@@ -133,6 +134,31 @@ def _infer_entity_id(action: Dict[str, Any], entity_map: Dict[str, Dict[str, Any
                 return eid
 
     return candidates[0] if len(candidates) == 1 else None
+
+
+def _fallback_action_for_entity(entity: Dict[str, Any], priority: int = 1) -> Dict[str, Any] | None:
+    entity_id = entity.get("entity_id")
+    domain = entity.get("domain") or (entity_id or "").split(".", 1)[0]
+    caps = _normalize_caps(entity)
+    data: Dict[str, Any] = {}
+    service = "turn_on"
+
+    if domain == "light":
+        if "brightness" in caps:
+            data["brightness"] = 120
+    elif domain in {"switch", "fan", "media_player"}:
+        service = "turn_on"
+    else:
+        return None
+
+    return {
+        "entity_id": entity_id,
+        "domain": domain,
+        "service": service,
+        "data": data,
+        "rationale": "Safe fallback because the AI returned no usable action for the selected device",
+        "priority": priority,
+    }
 
 
 def _repair_raw_scene(raw: Any, available_entities: List[Dict[str, Any]]) -> tuple[Dict[str, Any], List[str]]:
@@ -166,23 +192,41 @@ def _repair_raw_scene(raw: Any, available_entities: List[Dict[str, Any]]) -> tup
         if not isinstance(item, dict):
             continue
         action = dict(item)
+        inferred_entity = not action.get("entity_id")
         eid = _infer_entity_id(action, entity_map)
         if not eid:
             eid = action.get("entity_id")
         if not eid:
-            warnings.append(f"Omitted action {index + 1} because no entity_id could be inferred")
+            if action.get("domain"):
+                warnings.append(f"Omitted hallucinated {action.get('domain')} action because no matching selected entity exists")
+            else:
+                warnings.append(f"Omitted action {index + 1} because no entity_id could be inferred")
             continue
 
         entity = entity_map.get(eid, {})
-        domain = action.get("domain") or entity.get("domain") or eid.split(".", 1)[0]
+        actual_domain = entity.get("domain")
+        domain = action.get("domain") or actual_domain or eid.split(".", 1)[0]
         service = action.get("service") or action.get("action") or "turn_on"
         data = action.get("data") or action.get("service_data") or {}
         if not isinstance(data, dict):
             warnings.append(f"Replaced non-object action data for {eid}")
             data = {}
 
+        if actual_domain and domain != actual_domain:
+            if inferred_entity:
+                warnings.append(f"Omitted hallucinated {domain} action that did not match selected {actual_domain} entity {eid}")
+                continue
+            warnings.append(f"Repaired domain for {eid}: {domain} -> {actual_domain}")
+            domain = actual_domain
+
+        if service not in SERVICE_WHITELIST.get(domain, set()):
+            if inferred_entity and domain in {"light", "switch", "fan", "media_player"}:
+                warnings.append(f"Replaced unsupported service '{service}' for {eid} with turn_on")
+                service = "turn_on"
+                data = {}
+
         referenced_ids.add(eid)
-        if not action.get("entity_id"):
+        if inferred_entity:
             warnings.append(f"Repaired missing entity_id for {eid}")
         repaired["actions"].append(
             {
@@ -194,6 +238,15 @@ def _repair_raw_scene(raw: Any, available_entities: List[Dict[str, Any]]) -> tup
                 "priority": int(action.get("priority", max(0, 100 - index))),
             }
         )
+
+    if not repaired["actions"] and entity_map:
+        for entity in entity_map.values():
+            fallback = _fallback_action_for_entity(entity)
+            if fallback:
+                repaired["actions"].append(fallback)
+                referenced_ids.add(fallback["entity_id"])
+                warnings.append(f"Added safe fallback action for {fallback['entity_id']}")
+                break
 
     raw_entity_map = raw.get("entity_map") if isinstance(raw.get("entity_map"), dict) else {}
     ids_for_map = referenced_ids or set(entity_map)
