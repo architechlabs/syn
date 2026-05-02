@@ -69,6 +69,10 @@ STYLE_PALETTES = {
     ],
 }
 
+MOTION_STYLES = {"party", "horror"}
+PHASE_DURATION_MS = 1400
+PHASE_PAUSE_MS = 450
+
 EFFECT_PREFERENCES = {
     "party": ("party", "rhythm", "pulse", "pastel", "mojito", "diwali", "club", "rainbow", "color", "flow", "dynamic", "dance"),
     "horror": ("halloween", "fire", "candle", "pulse", "night", "deep", "mystic", "storm", "spooky"),
@@ -288,6 +292,23 @@ def _scene_style(scene: Dict[str, Any]) -> str:
     if any(word in text for word in ("movie", "cinema", "cozy", "cosy", "night", "relax", "dim", "sleep")):
         return "cozy"
     return "general"
+
+
+def _scene_text(scene: Dict[str, Any]) -> str:
+    return " ".join(
+        str(scene.get(key) or "")
+        for key in ("scene_name", "description", "intent", "target_room")
+    ).lower()
+
+
+def _prefers_effect_mode(scene: Dict[str, Any]) -> bool:
+    text = _scene_text(scene)
+    return any(phrase in text for phrase in ("effect mode", "wiz effect", "light effect", "use effect", "use effects"))
+
+
+def _wants_longer_motion(scene: Dict[str, Any]) -> bool:
+    text = _scene_text(scene)
+    return any(word in text for word in ("ongoing", "continuous", "loop", "looping", "animated", "animation", "changing", "pulse"))
 
 
 def _stable_index(value: str, size: int) -> int:
@@ -640,29 +661,36 @@ def _tune_action_for_scene(
             for key in ("effect", "rgb_color", "xy_color", "color_temp"):
                 data.pop(key, None)
             warnings.append(f"Tuned {entity_id} for full brightness with clean white light")
-        elif chosen_effect and style in {"party", "horror"}:
-            data["effect"] = chosen_effect
-            for key in ("color_temp", "color_temp_kelvin", "rgb_color", "xy_color"):
-                data.pop(key, None)
-            if "brightness" in caps:
-                data["brightness"] = 170 if style == "party" else 70
-            warnings.append(f"Selected supported {style} effect '{chosen_effect}' for {entity_id}")
-        elif style in {"party", "horror"} and "rgb_color" in caps and data.get("rgb_color") and _has_timing(tuned):
+        elif style in MOTION_STYLES and "rgb_color" in caps and data.get("rgb_color") and _has_timing(tuned):
             data.pop("effect", None)
             data.pop("color_temp", None)
             data.pop("color_temp_kelvin", None)
             if "brightness" in caps and "brightness" not in data:
                 data["brightness"] = 185 if style == "party" else 55
             warnings.append(f"Preserved timed {style} RGB phase for {entity_id}")
-        elif style in {"party", "horror"} and "rgb_color" in caps:
+        elif style in MOTION_STYLES and "rgb_color" in caps and not _prefers_effect_mode(scene):
             palette = STYLE_PALETTES[style]
             data["rgb_color"] = palette[_stable_index(str(entity_id), len(palette))]
+            data["transition"] = round(PHASE_DURATION_MS / 1000, 2)
             data.pop("effect", None)
             data.pop("color_temp", None)
             data.pop("color_temp_kelvin", None)
+            data.pop("xy_color", None)
             if "brightness" in caps:
                 data["brightness"] = 185 if style == "party" else 55
-            warnings.append(f"Applied {style} RGB palette for {entity_id}")
+            warnings.append(f"Prepared {entity_id} for explicit {style} RGB choreography")
+        elif chosen_effect and style in MOTION_STYLES:
+            data["effect"] = chosen_effect
+            for key in ("color_temp", "color_temp_kelvin", "rgb_color", "xy_color"):
+                data.pop(key, None)
+            if "brightness" in caps:
+                data["brightness"] = 170 if style == "party" else 70
+            warnings.append(f"Selected supported {style} effect '{chosen_effect}' for {entity_id}")
+        elif style in MOTION_STYLES and "brightness" in caps:
+            data["brightness"] = 120 if style == "party" else 45
+            for key in ("effect", "rgb_color", "xy_color", "color_temp", "color_temp_kelvin"):
+                data.pop(key, None)
+            warnings.append(f"Tuned brightness-only light {entity_id} for {style}")
         elif style == "office":
             if "brightness" in caps:
                 data["brightness"] = 190
@@ -718,7 +746,7 @@ def _tune_action_for_scene(
 
 
 def _has_timing(action: Dict[str, Any]) -> bool:
-    return any(action.get(field) for field in TIMING_FIELDS)
+    return any(action.get(field) for field in ("delay_ms", "duration_ms", "interval_ms")) or int(action.get("repeat") or 1) > 1
 
 
 def _dedupe_actions(actions: List[Dict[str, Any]], warnings: List[str]) -> List[Dict[str, Any]]:
@@ -746,6 +774,77 @@ def _dedupe_actions(actions: List[Dict[str, Any]], warnings: List[str]) -> List[
         warnings.append(f"Merged duplicate {key[1]}.{key[2]} action for {key[0]}")
 
     return result
+
+
+def _motion_repeat_count(scene: Dict[str, Any]) -> int:
+    return 6 if _wants_longer_motion(scene) else 3
+
+
+def _synthesize_motion_choreography(
+    actions: List[Dict[str, Any]],
+    scene: Dict[str, Any],
+    entity_map: Dict[str, Dict[str, Any]],
+    warnings: List[str],
+) -> List[Dict[str, Any]]:
+    style = _scene_style(scene)
+    if style not in MOTION_STYLES or _prefers_effect_mode(scene):
+        return actions
+
+    automation = scene.get("automation") if isinstance(scene.get("automation"), dict) else {}
+    if any(_has_timing(action) for action in actions) or int(automation.get("repeat") or 1) > 1:
+        return actions
+
+    palette = STYLE_PALETTES[style]
+    enhanced: List[Dict[str, Any]] = []
+    rgb_actions = [
+        action for action in actions
+        if action.get("domain") == "light"
+        and action.get("service") == "turn_on"
+        and "rgb_color" in _normalize_caps(entity_map.get(action.get("entity_id"), {}))
+    ]
+    if not rgb_actions:
+        return actions
+
+    static_actions = [action for action in actions if action not in rgb_actions]
+    phase_count = min(4 if _wants_longer_motion(scene) else 3, len(palette))
+    base_priority = max([int(action.get("priority", 0)) for action in actions] + [0]) + (phase_count + 1) * 20
+    for index, action in enumerate(static_actions):
+        enhanced.append({**action, "priority": base_priority + 10 - index})
+
+    for phase in range(phase_count):
+        for light_index, action in enumerate(rgb_actions):
+            entity_id = action.get("entity_id")
+            entity = entity_map.get(entity_id, {})
+            caps = _normalize_caps(entity)
+            data = {
+                key: value
+                for key, value in (action.get("data") or {}).items()
+                if key not in {"effect", "color_temp", "color_temp_kelvin", "xy_color", "rgb_color"}
+            }
+            data["rgb_color"] = palette[(_stable_index(str(entity_id), len(palette)) + phase) % len(palette)]
+            data["transition"] = round(PHASE_DURATION_MS / 1000, 2)
+            if "brightness" in caps:
+                data["brightness"] = data.get("brightness") or (185 if style == "party" else 55)
+            phase_action = {
+                **action,
+                "data": data,
+                "rationale": f"{style.title()} color phase {phase + 1} for {_entity_label(entity)}",
+                "priority": base_priority - (phase * 10) - light_index,
+                "duration_ms": PHASE_DURATION_MS,
+            }
+            if phase > 0 and light_index == 0:
+                phase_action["delay_ms"] = PHASE_DURATION_MS + PHASE_PAUSE_MS
+            enhanced.append(phase_action)
+
+    scene["automation"] = {
+        "mode": "loop",
+        "summary": f"Short safe {style} color choreography generated by Syn.",
+        "repeat": _motion_repeat_count(scene),
+        "interval_ms": PHASE_PAUSE_MS,
+        "duration_ms": _motion_repeat_count(scene) * phase_count * (PHASE_DURATION_MS + PHASE_PAUSE_MS),
+    }
+    warnings.append(f"Generated repeating {style} RGB choreography with {phase_count} phases")
+    return enhanced
 
 
 def validate_and_normalize(raw: Any, available_entities: List[Dict[str, Any]]) -> ValidationResult:
@@ -823,6 +922,7 @@ def validate_and_normalize(raw: Any, available_entities: List[Dict[str, Any]]) -
 
     normalized = raw.copy()
     normalized_actions = _dedupe_actions(normalized_actions, warnings)
+    normalized_actions = _synthesize_motion_choreography(normalized_actions, normalized, entity_map, warnings)
     normalized["actions"] = sorted(normalized_actions, key=lambda item: item.get("priority", 0), reverse=True)
     normalized["warnings"] = _string_list((normalized.get("warnings") or []) + warnings)
     return ValidationResult(True, normalized=normalized, warnings=warnings)
