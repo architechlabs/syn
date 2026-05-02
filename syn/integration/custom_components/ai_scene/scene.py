@@ -55,7 +55,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     """Set up Syn saved drafts as Home Assistant scene entities."""
 
     domain_data = hass.data.setdefault(DOMAIN, {})
-    known_ids: set[str] = domain_data.setdefault("scene_entity_ids", set())
+    entities_by_id: dict[str, SynSavedScene] = domain_data.setdefault("scene_entities", {})
 
     async def refresh_scenes(_now=None) -> None:
         try:
@@ -64,13 +64,25 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
             _LOGGER.warning("Unable to refresh Syn scenes from add-on: %s", exc)
             return
 
+        active_ids = {summary.get("id") for summary in summaries if summary.get("id")}
+        for scene_id in list(entities_by_id):
+            if scene_id not in active_ids:
+                entity = entities_by_id.pop(scene_id)
+                if hasattr(entity, "async_remove"):
+                    await entity.async_remove()
+
         new_entities = []
         for summary in summaries:
             scene_id = summary.get("id")
-            if not scene_id or scene_id in known_ids:
+            if not scene_id:
                 continue
-            known_ids.add(scene_id)
-            new_entities.append(SynSavedScene(hass, summary))
+            if scene_id in entities_by_id:
+                entities_by_id[scene_id].summary = summary
+                entities_by_id[scene_id].async_write_ha_state()
+                continue
+            entity = SynSavedScene(hass, summary)
+            entities_by_id[scene_id] = entity
+            new_entities.append(entity)
 
         if new_entities:
             async_add_entities(new_entities, True)
@@ -101,6 +113,9 @@ class SynSavedScene(Scene):
             "scene_id": self.scene_id,
             "status": self.summary.get("status"),
             "target_room": self.summary.get("target_room"),
+            "description": self.summary.get("description"),
+            "action_count": self.summary.get("action_count", 0),
+            "controlled_entities": self.summary.get("controlled_entities", []),
             "created": self.summary.get("created"),
             "updated": self.summary.get("updated"),
             "source": "Syn add-on",

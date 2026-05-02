@@ -39,6 +39,13 @@ class SceneStorage:
             payload = json.loads(txt)
             return payload.get("scene", payload)
 
+    async def delete_scene(self, scene_id: str) -> bool:
+        path = os.path.join(self.base, f"{scene_id}.json")
+        if not os.path.exists(path):
+            return False
+        await aiofiles.os.remove(path)
+        return True
+
     async def mark_committed(self, scene_id: str) -> bool:
         path = os.path.join(self.base, f"{scene_id}.json")
         if not os.path.exists(path):
@@ -67,6 +74,14 @@ class SceneStorage:
                 async with aiofiles.open(os.path.join(self.base, filename), "r", encoding="utf-8") as fh:
                     payload = json.loads(await fh.read())
                 scene = payload.get("scene", payload)
+                actions = scene.get("actions", []) if isinstance(scene, dict) else []
+                controlled_entities = sorted(
+                    {
+                        action.get("entity_id")
+                        for action in actions
+                        if isinstance(action, dict) and action.get("entity_id")
+                    }
+                )
                 scenes.append(
                     {
                         "id": payload.get("id", filename[:-5]),
@@ -75,6 +90,9 @@ class SceneStorage:
                         "status": payload.get("status", "draft"),
                         "name": scene.get("scene_name", "Unnamed"),
                         "target_room": scene.get("target_room"),
+                        "description": scene.get("description"),
+                        "action_count": len(actions),
+                        "controlled_entities": controlled_entities,
                     }
                 )
             except Exception:

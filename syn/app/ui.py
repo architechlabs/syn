@@ -143,6 +143,26 @@ INDEX_HTML = """<!doctype html>
       color: #eafff8;
       font: .9rem/1.55 "Cascadia Mono", Consolas, monospace;
     }
+    .tabs { display:flex; gap: 8px; margin-bottom: 14px; }
+    .tab { color: var(--muted); background: rgba(0,0,0,.16); border: 1px solid var(--line); box-shadow: none; }
+    .tab.active { color: #10211d; background: var(--accent-2); border-color: transparent; }
+    .hidden { display: none !important; }
+    .plan { display: grid; gap: 12px; min-height: 460px; max-height: 720px; overflow: auto; padding-right: 4px; }
+    .plan-hero, .plan-action, .notice {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 14px;
+      background: rgba(0,0,0,.18);
+    }
+    .plan-hero h3 { margin: 0 0 8px; font-size: 1.35rem; }
+    .plan-hero p, .plan-action p { margin: 6px 0; color: var(--muted); }
+    .plan-badges { display:flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .badge { border: 1px solid var(--line); border-radius: 999px; padding: 6px 9px; color: var(--muted); background: rgba(0,0,0,.18); font-size: .78rem; }
+    .plan-action strong { display:block; margin-bottom: 6px; }
+    .kv { display:grid; grid-template-columns: auto 1fr; gap: 6px 10px; margin-top: 10px; font-size: .88rem; }
+    .kv span:nth-child(odd) { color: var(--muted); }
+    .notice.warn { border-color: rgba(240,185,90,.42); }
+    .danger { color: var(--danger) !important; border-color: rgba(255,138,122,.44) !important; }
     .empty {
       border: 1px dashed rgba(244,239,229,.24);
       border-radius: 18px;
@@ -253,7 +273,12 @@ INDEX_HTML = """<!doctype html>
           <p class="hint">Preview before applying. Save draft creates a Syn scene entity in the integration.</p>
         </div>
         <div class="card-body">
-          <pre id="output">Preview output will appear here.</pre>
+          <div class="tabs">
+            <button class="tab active" id="show-plan">Readable</button>
+            <button class="tab" id="show-json">Raw JSON</button>
+          </div>
+          <div id="plan" class="plan"><div class="empty">Preview output will appear here.</div></div>
+          <pre id="output" class="hidden">Preview output will appear here.</pre>
         </div>
       </aside>
     </section>
@@ -269,8 +294,90 @@ INDEX_HTML = """<!doctype html>
       domain: "all",
       areas: [],
       scenes: [],
-      lastScene: null
+      lastScene: null,
+      lastRaw: null,
+      outputMode: "plan"
     };
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;"
+      }[char]));
+    }
+
+    function renderOutput(data) {
+      state.lastRaw = data;
+      $("#output").textContent = JSON.stringify(data, null, 2);
+      const scene = data?.scene || data;
+      if (data?.overall_status && Array.isArray(data.actions)) {
+        $("#plan").innerHTML = `
+          <article class="plan-hero">
+            <h3>${escapeHtml(data.overall_status === "success" ? "Scene applied" : "Scene action report")}</h3>
+            <p>${escapeHtml(data.message || "Home Assistant returned an execution result.")}</p>
+            <div class="plan-badges">
+              <span class="badge">${escapeHtml(data.overall_status)}</span>
+              <span class="badge">${data.actions_executed || 0} applied</span>
+              <span class="badge">${data.actions_failed || 0} failed</span>
+            </div>
+          </article>
+          ${data.actions.map((action, index) => `
+            <article class="plan-action">
+              <strong>${index + 1}. ${escapeHtml(action.entity_id || "unknown")} -> ${escapeHtml(action.service || "skipped")}</strong>
+              <p>${escapeHtml(action.message || action.status || "Completed")}</p>
+              <div class="kv">
+                <span>Status</span><span>${escapeHtml(action.status)}</span>
+                <span>Data</span><span><code>${escapeHtml(JSON.stringify(action.data || {}))}</code></span>
+              </div>
+            </article>
+          `).join("")}
+        `;
+        return;
+      }
+      if (data?.errors) {
+        $("#plan").innerHTML = `<article class="notice warn"><strong>Needs attention</strong>${data.errors.map((error) => `<p>${escapeHtml(error)}</p>`).join("")}</article>`;
+        return;
+      }
+      if (!scene || !scene.actions) {
+        $("#plan").innerHTML = `<div class="empty">No scene plan in this response. Open Raw JSON for details.</div>`;
+        return;
+      }
+      const actions = scene.actions || [];
+      const warnings = [...(scene.warnings || []), ...(data.warnings || [])].filter(Boolean);
+      $("#plan").innerHTML = `
+        <article class="plan-hero">
+          <h3>${escapeHtml(scene.scene_name || "Syn Scene")}</h3>
+          <p>${escapeHtml(scene.description || scene.intent || "Generated scene plan")}</p>
+          <div class="plan-badges">
+            <span class="badge">${escapeHtml(scene.target_room || "No area")}</span>
+            <span class="badge">${actions.length} action${actions.length === 1 ? "" : "s"}</span>
+            <span class="badge">${Math.round((scene.confidence ?? 0) * 100)}% confidence</span>
+          </div>
+        </article>
+        ${actions.map((action, index) => `
+          <article class="plan-action">
+            <strong>${index + 1}. ${escapeHtml(action.entity_id)} -> ${escapeHtml(action.domain)}.${escapeHtml(action.service)}</strong>
+            <p>${escapeHtml(action.rationale || "No rationale supplied.")}</p>
+            <div class="kv">
+              <span>Priority</span><span>${escapeHtml(action.priority ?? 0)}</span>
+              <span>Data</span><span><code>${escapeHtml(JSON.stringify(action.data || {}))}</code></span>
+            </div>
+          </article>
+        `).join("")}
+        ${warnings.length ? `<article class="notice warn"><strong>Warnings</strong>${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</article>` : ""}
+      `;
+    }
+
+    function setOutputMode(mode) {
+      state.outputMode = mode;
+      $("#show-plan").classList.toggle("active", mode === "plan");
+      $("#show-json").classList.toggle("active", mode === "json");
+      $("#plan").classList.toggle("hidden", mode !== "plan");
+      $("#output").classList.toggle("hidden", mode !== "json");
+    }
 
     function setStatus(message, kind = "") {
       const status = $("#status");
@@ -367,6 +474,8 @@ INDEX_HTML = """<!doctype html>
           <div class="actions">
             <button class="secondary" data-load-scene="${scene.id}">View</button>
             <button class="ghost" data-run-scene="${scene.id}">Run</button>
+            <button class="ghost" data-off-scene="${scene.id}">Turn off</button>
+            <button class="ghost danger" data-delete-scene="${scene.id}">Delete</button>
           </div>
         </article>
       `).join("");
@@ -375,6 +484,12 @@ INDEX_HTML = """<!doctype html>
       });
       document.querySelectorAll("[data-run-scene]").forEach((button) => {
         button.addEventListener("click", () => runSavedScene(button.dataset.runScene));
+      });
+      document.querySelectorAll("[data-off-scene]").forEach((button) => {
+        button.addEventListener("click", () => deactivateSavedScene(button.dataset.offScene).catch((error) => setStatus(error.message, "bad")));
+      });
+      document.querySelectorAll("[data-delete-scene]").forEach((button) => {
+        button.addEventListener("click", () => deleteScene(button.dataset.deleteScene).catch((error) => setStatus(error.message, "bad")));
       });
     }
 
@@ -418,7 +533,7 @@ INDEX_HTML = """<!doctype html>
 
     async function loadScene(sceneId) {
       const data = await getJson(`get_scene/${sceneId}`);
-      $("#output").textContent = JSON.stringify(data, null, 2);
+      renderOutput(data);
       state.lastScene = data.scene || data;
       setStatus("Saved scene loaded.", "ok");
     }
@@ -426,6 +541,26 @@ INDEX_HTML = """<!doctype html>
     async function runSavedScene(sceneId) {
       await loadScene(sceneId);
       await applyScene(state.lastScene);
+    }
+
+    async function deactivateSavedScene(sceneId) {
+      setStatus("Turning off scene devices...");
+      const response = await fetch(endpoint(`deactivate_scene/${sceneId}`), {method: "POST"});
+      const data = await response.json();
+      renderOutput(data);
+      if (!response.ok || data.overall_status === "failed") throw new Error(data.message || "Scene deactivation failed.");
+      setStatus(data.message || "Scene devices turned off.", "ok");
+    }
+
+    async function deleteScene(sceneId) {
+      if (!confirm("Delete this Syn scene? It will disappear from the add-on and the integration on refresh.")) return;
+      const response = await fetch(endpoint(`scenes/${sceneId}`), {method: "DELETE"});
+      const data = await response.json();
+      renderOutput(data);
+      if (!response.ok) throw new Error(data.detail || data.message || "Delete failed.");
+      if (state.lastScene && state.lastRaw?.scene_id === sceneId) state.lastScene = null;
+      await loadScenes();
+      setStatus("Scene deleted. Home Assistant integration entities will disappear on refresh.", "ok");
     }
 
     function buildPayload() {
@@ -451,7 +586,7 @@ INDEX_HTML = """<!doctype html>
           body: JSON.stringify(payload)
         });
         const data = await response.json();
-        $("#output").textContent = JSON.stringify(data, null, 2);
+        renderOutput(data);
         if (!response.ok) throw new Error(data.detail?.message || data.detail || `HTTP ${response.status}`);
         state.lastScene = data.scene || null;
         setStatus(path === "generate_scene" ? "Draft saved. It will appear as a Syn scene entity." : "Preview ready.", "ok");
@@ -475,7 +610,7 @@ INDEX_HTML = """<!doctype html>
         body: JSON.stringify({scene})
       });
       const data = await response.json();
-      $("#output").textContent = JSON.stringify(data, null, 2);
+      renderOutput(data);
       if (!response.ok || data.overall_status === "failed") {
         throw new Error(data.message || "Scene execution failed.");
       }
@@ -484,7 +619,7 @@ INDEX_HTML = """<!doctype html>
 
     async function diagnostics() {
       const data = await getJson("discovery_status");
-      $("#output").textContent = JSON.stringify(data, null, 2);
+      renderOutput(data);
       $("#health-dot").classList.toggle("ok", Boolean(data.ok));
       $("#health-title").textContent = data.ok ? "Syn ready" : "Syn needs attention";
       $("#health-text").textContent = data.message || "Diagnostics loaded.";
@@ -492,7 +627,7 @@ INDEX_HTML = """<!doctype html>
 
     async function config() {
       const data = await getJson("config_status");
-      $("#output").textContent = JSON.stringify(data, null, 2);
+      renderOutput(data);
       setStatus(data.api_key_configured ? "AI configuration is loaded." : "AI key is missing.", data.api_key_configured ? "ok" : "bad");
     }
 
@@ -514,6 +649,8 @@ INDEX_HTML = """<!doctype html>
       state.selectedIds.clear();
       renderEntities();
     });
+    $("#show-plan").addEventListener("click", () => setOutputMode("plan"));
+    $("#show-json").addEventListener("click", () => setOutputMode("json"));
 
     loadAreas();
     loadEntities();

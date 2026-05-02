@@ -199,9 +199,59 @@ async def execute_scene(payload: dict):
     return await execute_scene_actions(scene)
 
 
+def _deactivation_plan(scene: dict) -> dict:
+    off_actions = []
+    seen = set()
+    for action in scene.get("actions", []) or []:
+        entity_id = action.get("entity_id")
+        domain = action.get("domain")
+        if not entity_id or not domain or entity_id in seen:
+            continue
+        if domain not in {"light", "switch", "fan", "media_player"}:
+            continue
+        seen.add(entity_id)
+        off_actions.append(
+            {
+                "entity_id": entity_id,
+                "domain": domain,
+                "service": "turn_off",
+                "data": {},
+                "rationale": "Deactivate Syn scene controlled device",
+                "priority": action.get("priority", 0),
+            }
+        )
+    return {
+        "scene_name": f"Deactivate {scene.get('scene_name', 'Syn Scene')}",
+        "description": "Turn off devices controlled by this Syn scene.",
+        "intent": "Deactivate scene",
+        "target_room": scene.get("target_room", "unspecified"),
+        "actions": off_actions,
+        "confidence": 1,
+        "warnings": [],
+        "assumptions": ["Only devices controlled by the saved Syn scene are turned off."],
+        "entity_map": scene.get("entity_map", {}),
+    }
+
+
+@app.post("/deactivate_scene/{scene_id}")
+async def deactivate_scene(scene_id: str):
+    scene = await storage.get_scene(scene_id)
+    if not scene:
+        raise HTTPException(status_code=404, detail="scene not found")
+    return await execute_scene_actions(_deactivation_plan(scene))
+
+
 @app.get("/scenes")
 async def list_scenes(skip: int = 0, limit: int = 100):
     return {"scenes": await storage.list_scenes(skip=skip, limit=limit)}
+
+
+@app.delete("/scenes/{scene_id}")
+async def delete_scene(scene_id: str):
+    deleted = await storage.delete_scene(scene_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="scene not found")
+    return {"ok": True, "scene_id": scene_id, "message": "Scene deleted"}
 
 
 @app.post("/preview_scene")
