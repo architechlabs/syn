@@ -72,6 +72,16 @@ def _read_yaml(path: Path, fallback: Any) -> Any:
     return deepcopy(fallback) if data is None else data
 
 
+def _scripts_mapping(data: Any, scripts_path: Path) -> dict[str, Any]:
+    """Return a scripts mapping while tolerating HA's empty-list placeholder."""
+
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list) and not data:
+        return {}
+    raise ValueError(f"{scripts_path} must contain a YAML mapping or an empty list to export Syn scripts safely")
+
+
 def _write_yaml(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -194,9 +204,7 @@ def _upsert_native_files(config_path: Path, scene_id: str, scene: dict[str, Any]
         scenes.append(scene_entry)
     _write_yaml(scenes_path, scenes)
 
-    scripts = _read_yaml(scripts_path, {})
-    if not isinstance(scripts, dict):
-        raise ValueError(f"{scripts_path} must contain a YAML mapping to export Syn scripts safely")
+    scripts = _scripts_mapping(_read_yaml(scripts_path, {}), scripts_path)
     scripts[ids.start_script_id] = _start_script_entry(scene_id, scene)
     scripts[ids.stop_script_id] = _stop_script_entry(scene_id, scene)
     _write_yaml(scripts_path, scripts)

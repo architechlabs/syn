@@ -43,6 +43,20 @@ def _one_runtime_cycle(scene: dict[str, Any]) -> dict[str, Any]:
     return cycle
 
 
+def _summarize_result(result: Any) -> Any:
+    if not isinstance(result, dict):
+        return result
+    summary = {
+        key: result.get(key)
+        for key in ("overall_status", "message", "actions_executed", "actions_failed")
+        if key in result
+    }
+    actions = result.get("actions")
+    if isinstance(actions, list):
+        summary["action_count"] = len(actions)
+    return summary or None
+
+
 class SceneRuntimeManager:
     """Owns long-running scene loops so HA switch off can stop them cleanly."""
 
@@ -75,6 +89,8 @@ class SceneRuntimeManager:
             if "restore_snapshot" in state:
                 state["restore_snapshot_available"] = bool((state.get("restore_snapshot") or {}).get("states"))
                 state.pop("restore_snapshot", None)
+            state["last_result"] = _summarize_result(state.get("last_result"))
+            state["last_restore_result"] = _summarize_result(state.get("last_restore_result"))
             return state
         return {
             "running": sorted(scene_id for scene_id in self._states if self.is_running(scene_id)),
@@ -162,7 +178,7 @@ class SceneRuntimeManager:
     async def _restore(self, scene_id: str) -> dict[str, Any]:
         state = self._state(scene_id)
         result = await restore_scene_snapshot(state.get("restore_snapshot"))
-        state["last_restore_result"] = result
+        state["last_restore_result"] = _summarize_result(result)
         if result.get("overall_status") in {"success", "skipped"}:
             state["restore_snapshot"] = None
         state["updated_at"] = _utcnow()

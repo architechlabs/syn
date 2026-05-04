@@ -309,17 +309,17 @@ async def deactivate_scene(scene_id: str):
     if not scene:
         raise HTTPException(status_code=404, detail="scene not found")
     stopped = await runtime.stop(scene_id, restore=True)
+    runtime_info = {key: value for key, value in stopped.items() if key != "restore_result"}
     restore_result = stopped.get("restore_result") if isinstance(stopped, dict) else None
     if isinstance(restore_result, dict) and restore_result.get("overall_status") != "skipped":
-        restore_result["runtime"] = stopped
-        return restore_result
+        return {**restore_result, "runtime": runtime_info}
     return {
         "overall_status": "skipped",
         "message": "No pre-scene snapshot exists for this saved scene, so Syn left devices unchanged instead of turning them off.",
         "actions": [],
         "actions_executed": 0,
         "actions_failed": 0,
-        "runtime": stopped,
+        "runtime": runtime_info,
         "fallback_plan": _deactivation_plan(scene),
     }
 
