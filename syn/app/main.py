@@ -11,6 +11,7 @@ from .ha_client import list_areas, list_entities
 from .validator import validate_and_normalize
 from .storage import SceneStorage
 from .storage import BASE as SCENES_PATH
+from .runtime import SceneRuntimeManager
 from .logger import get_logger
 from .settings import load_ai_settings, mask_secret
 from .version_sync import (
@@ -24,6 +25,7 @@ from .ui import INDEX_HTML
 logger = get_logger("addon.main")
 app = FastAPI(title="AI Scene Planner")
 storage = SceneStorage()
+runtime = SceneRuntimeManager(logger)
 
 
 async def _with_discovered_entities(request: ScenePlanRequest) -> ScenePlanRequest:
@@ -163,6 +165,11 @@ async def sync_versions_on_startup() -> None:
     )
 
 
+@app.on_event("shutdown")
+async def stop_runtime_on_shutdown() -> None:
+    await runtime.stop_all()
+
+
 @app.post("/generate_scene", response_model=ScenePlanResponse)
 async def generate_scene(request: ScenePlanRequest):
     """Generate a scene plan from prompt + entities."""
@@ -217,6 +224,32 @@ async def execute_scene(payload: dict):
     return await execute_scene_actions(scene)
 
 
+@app.post("/start_scene/{scene_id}")
+async def start_scene(scene_id: str):
+    scene = await storage.get_scene(scene_id)
+    if not scene:
+        raise HTTPException(status_code=404, detail="scene not found")
+    result = await runtime.start(scene_id, scene)
+    if not result.get("ok", True):
+        return JSONResponse(status_code=502, content=result)
+    return result
+
+
+@app.post("/stop_scene/{scene_id}")
+async def stop_scene(scene_id: str):
+    return await runtime.stop(scene_id)
+
+
+@app.get("/scene_status/{scene_id}")
+async def scene_status(scene_id: str):
+    return runtime.status(scene_id)
+
+
+@app.get("/runtime_status")
+async def runtime_status():
+    return runtime.status()
+
+
 def _deactivation_plan(scene: dict) -> dict:
     off_actions = []
     seen = set()
@@ -256,16 +289,19 @@ async def deactivate_scene(scene_id: str):
     scene = await storage.get_scene(scene_id)
     if not scene:
         raise HTTPException(status_code=404, detail="scene not found")
+    await runtime.stop(scene_id)
     return await execute_scene_actions(_deactivation_plan(scene))
 
 
 @app.get("/scenes")
 async def list_scenes(skip: int = 0, limit: int = 100):
-    return {"scenes": await storage.list_scenes(skip=skip, limit=limit)}
+    scenes = await storage.list_scenes(skip=skip, limit=limit)
+    return {"scenes": runtime.enrich_summaries(scenes)}
 
 
 @app.delete("/scenes/{scene_id}")
 async def delete_scene(scene_id: str):
+    await runtime.stop(scene_id)
     deleted = await storage.delete_scene(scene_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="scene not found")

@@ -75,6 +75,8 @@ class SceneStorage:
                     payload = json.loads(await fh.read())
                 scene = payload.get("scene", payload)
                 actions = scene.get("actions", []) if isinstance(scene, dict) else []
+                automation = scene.get("automation", {}) if isinstance(scene, dict) else {}
+                automation = automation if isinstance(automation, dict) else {}
                 controlled_entities = sorted(
                     {
                         action.get("entity_id")
@@ -91,6 +93,12 @@ class SceneStorage:
                         "name": scene.get("scene_name", "Unnamed"),
                         "target_room": scene.get("target_room"),
                         "description": scene.get("description"),
+                        "automation": automation,
+                        "is_animated": automation.get("mode") in {"loop", "sequence"} or any(
+                            isinstance(action, dict)
+                            and any(action.get(key) for key in ("delay_ms", "duration_ms", "interval_ms"))
+                            for action in actions
+                        ),
                         "action_count": len(actions),
                         "controlled_entities": controlled_entities,
                     }

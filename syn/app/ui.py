@@ -373,6 +373,21 @@ INDEX_HTML = """<!doctype html>
         `;
         return;
       }
+      if (data?.scene_id && Object.prototype.hasOwnProperty.call(data, "running")) {
+        const runtime = data.status || {};
+        $("#plan").innerHTML = `
+          <article class="plan-hero">
+            <h3>${escapeHtml(data.running ? "Scene loop running" : "Scene started")}</h3>
+            <p>${escapeHtml(data.message || (data.running ? "Syn is keeping this scene active until you turn it off." : "Scene action completed."))}</p>
+            <div class="plan-badges">
+              <span class="badge">${escapeHtml(data.mode || runtime.mode || "scene")}</span>
+              <span class="badge">${escapeHtml(data.scene_id)}</span>
+              ${runtime.iterations ? `<span class="badge">${runtime.iterations} loop${runtime.iterations === 1 ? "" : "s"}</span>` : ""}
+            </div>
+          </article>
+        `;
+        return;
+      }
       if (data?.errors) {
         $("#plan").innerHTML = `<article class="notice warn"><strong>Needs attention</strong>${data.errors.map((error) => `<p>${escapeHtml(error)}</p>`).join("")}</article>`;
         return;
@@ -545,7 +560,7 @@ INDEX_HTML = """<!doctype html>
         <article class="saved">
           <strong>${scene.name || scene.id}</strong>
           <small>${scene.id}</small>
-          <small>${scene.target_room || "No room"} | ${scene.status || "draft"}</small>
+          <small>${scene.target_room || "No room"} | ${scene.status || "draft"}${scene.is_animated ? " | animated" : ""}${scene.running ? " | running" : ""}</small>
           <div class="actions">
             <button class="secondary" data-load-scene="${scene.id}">View</button>
             <button class="ghost" data-run-scene="${scene.id}">Run</button>
@@ -614,8 +629,13 @@ INDEX_HTML = """<!doctype html>
     }
 
     async function runSavedScene(sceneId) {
-      await loadScene(sceneId);
-      await applyScene(state.lastScene);
+      setStatus("Starting saved scene...");
+      const response = await fetch(endpoint(`start_scene/${sceneId}`), {method: "POST"});
+      const data = await response.json();
+      renderOutput(data);
+      if (!response.ok || data.ok === false) throw new Error(data.message || "Scene failed to start.");
+      await loadScenes();
+      setStatus(data.running ? "Scene loop is running. Use Turn off to stop it." : "Scene applied.", "ok");
     }
 
     async function deactivateSavedScene(sceneId) {

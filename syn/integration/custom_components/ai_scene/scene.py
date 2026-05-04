@@ -114,6 +114,10 @@ class SynSavedScene(Scene):
             "status": self.summary.get("status"),
             "target_room": self.summary.get("target_room"),
             "description": self.summary.get("description"),
+            "automation": self.summary.get("automation"),
+            "is_animated": self.summary.get("is_animated", False),
+            "running": self.summary.get("running", False),
+            "runtime": self.summary.get("runtime"),
             "action_count": self.summary.get("action_count", 0),
             "controlled_entities": self.summary.get("controlled_entities", []),
             "created": self.summary.get("created"),
@@ -122,13 +126,9 @@ class SynSavedScene(Scene):
         }
 
     async def async_activate(self, **kwargs: Any) -> None:
-        detail = await _request_json(self.hass, "GET", f"/get_scene/{self.scene_id}")
-        scene = detail.get("scene", detail)
-        if not isinstance(scene, dict):
-            raise HomeAssistantError(f"Syn scene {self.scene_id} did not return a scene payload")
-
-        result = await _request_json(self.hass, "POST", "/execute_scene", {"scene": scene})
-        if result.get("overall_status") in {"failed", "partial_failure"}:
+        result = await _request_json(self.hass, "POST", f"/start_scene/{self.scene_id}")
+        nested = result.get("result") if isinstance(result.get("result"), dict) else {}
+        if result.get("ok") is False or nested.get("overall_status") in {"failed", "partial_failure"}:
             raise HomeAssistantError(result.get("message") or f"Syn scene {self.scene_id} failed")
 
     async def async_update(self) -> None:

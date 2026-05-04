@@ -311,6 +311,24 @@ def _wants_longer_motion(scene: Dict[str, Any]) -> bool:
     return any(word in text for word in ("ongoing", "continuous", "loop", "looping", "animated", "animation", "changing", "pulse"))
 
 
+def _scene_mentions_any(scene: Dict[str, Any], words: set[str]) -> bool:
+    text = _scene_text(scene)
+    return any(word in text for word in words)
+
+
+def _should_add_missing_entity(scene: Dict[str, Any], entity: Dict[str, Any], existing_domains: set[str]) -> bool:
+    domain = entity.get("domain")
+    if domain == "light":
+        return "light" in existing_domains or _scene_style(scene) in {"party", "horror", "office", "cozy", "full_brightness"}
+    if domain == "media_player":
+        return "media_player" in existing_domains or _scene_mentions_any(scene, {"movie", "tv", "music", "audio", "speaker", "volume"})
+    if domain == "fan":
+        return "fan" in existing_domains or _scene_mentions_any(scene, {"fan", "air", "breeze", "cool"})
+    if domain == "switch":
+        return "switch" in existing_domains
+    return False
+
+
 def _stable_index(value: str, size: int) -> int:
     if size <= 0:
         return 0
@@ -919,6 +937,45 @@ def validate_and_normalize(raw: Any, available_entities: List[Dict[str, Any]]) -
 
     if errors:
         return ValidationResult(False, errors=errors)
+
+    handled_ids = {action.get("entity_id") for action in normalized_actions}
+    existing_domains = {action.get("domain") for action in normalized_actions if action.get("domain")}
+    next_priority = min([int(action.get("priority", 0)) for action in normalized_actions] + [0]) - 1
+    for eid, entity in entity_map.items():
+        if eid in handled_ids or not _should_add_missing_entity(raw, entity, existing_domains):
+            continue
+        fallback = _fallback_action_for_entity(entity, priority=next_priority)
+        if not fallback:
+            continue
+        caps = _normalize_caps(entity)
+        fallback = _tune_action_for_scene(fallback, raw, entity, caps, warnings)
+        service = SERVICE_ALIASES.get((fallback["domain"], fallback["service"]), fallback["service"])
+        try:
+            data = _normalize_action_data(
+                fallback["entity_id"],
+                fallback["domain"],
+                service,
+                fallback.get("data") or {},
+                caps,
+                warnings,
+            )
+        except ValueError as exc:
+            warnings.append(f"Skipped fallback for {eid}: {exc}")
+            continue
+        normalized_actions.append(
+            {
+                "entity_id": fallback["entity_id"],
+                "domain": fallback["domain"],
+                "service": service,
+                "data": data,
+                "rationale": f"Included selected {_entity_label(entity)} because the AI skipped it",
+                "priority": next_priority,
+            }
+        )
+        handled_ids.add(eid)
+        existing_domains.add(fallback["domain"])
+        next_priority -= 1
+        warnings.append(f"Added safe action for selected entity {eid} because the AI skipped it")
 
     normalized = raw.copy()
     normalized_actions = _dedupe_actions(normalized_actions, warnings)

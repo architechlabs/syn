@@ -474,7 +474,10 @@ async def discovery_status() -> dict[str, Any]:
     }
 
 
-async def execute_scene_actions(scene: dict[str, Any]) -> dict[str, Any]:
+async def execute_scene_actions(
+    scene: dict[str, Any],
+    sequence_repeat_override: int | None = None,
+) -> dict[str, Any]:
     settings = load_ha_api_settings()
     if not settings.configured:
         return {
@@ -494,7 +497,11 @@ async def execute_scene_actions(scene: dict[str, Any]) -> dict[str, Any]:
         }
 
     automation = _scene_automation(scene)
-    sequence_repeat = int(automation["repeat"])
+    sequence_repeat = (
+        max(1, min(MAX_REPEAT, int(sequence_repeat_override)))
+        if sequence_repeat_override is not None
+        else int(automation["repeat"])
+    )
     sequence_interval_ms = int(automation["interval_ms"])
     planned_calls = sequence_repeat * sum(_bounded_action_int(action, "repeat", 1, 1, MAX_REPEAT) for action in actions)
     results = []
