@@ -11,6 +11,7 @@ from typing import Any
 from .settings import DEFAULT_OPTIONS_PATH, _read_options, mask_secret
 
 SUPPORTED_DOMAINS = {"light", "switch", "fan", "media_player", "climate", "cover"}
+RESTORABLE_DOMAINS = {"light", "switch", "fan", "media_player"}
 DEFAULT_HA_API_URL = "http://supervisor/core/api"
 DEFAULT_MANUAL_HA_API_URL = "http://homeassistant:8123/api"
 DEFAULT_HA_CONFIG_PATH = Path("/config")
@@ -294,6 +295,211 @@ def _retry_payloads(domain: str, service: str, payload: dict[str, Any]) -> list[
         if attempt not in unique:
             unique.append(attempt)
     return unique
+
+
+def controlled_entity_ids(scene: dict[str, Any]) -> list[str]:
+    entity_ids = []
+    seen = set()
+    for action in scene.get("actions", []) or []:
+        if not isinstance(action, dict):
+            continue
+        entity_id = action.get("entity_id")
+        domain = action.get("domain")
+        if not entity_id or not domain or domain not in RESTORABLE_DOMAINS or entity_id in seen:
+            continue
+        seen.add(entity_id)
+        entity_ids.append(entity_id)
+    return entity_ids
+
+
+def _snapshot_attributes(domain: str, attrs: dict[str, Any]) -> dict[str, Any]:
+    if domain == "light":
+        keys = (
+            "brightness",
+            "color_temp",
+            "color_temp_kelvin",
+            "rgb_color",
+            "xy_color",
+            "hs_color",
+            "effect",
+        )
+    elif domain == "fan":
+        keys = ("percentage", "preset_mode", "oscillating")
+    elif domain == "media_player":
+        keys = ("volume_level", "is_volume_muted", "source")
+    else:
+        keys = ()
+    return {
+        key: attrs[key]
+        for key in keys
+        if key in attrs and attrs[key] not in (None, "None", "unknown", "unavailable")
+    }
+
+
+async def snapshot_scene_entities(scene: dict[str, Any]) -> dict[str, Any]:
+    """Capture the current HA states for devices this scene controls."""
+
+    settings = load_ha_api_settings()
+    entity_ids = controlled_entity_ids(scene)
+    if not entity_ids:
+        return {"ok": False, "message": "Scene has no restorable entities.", "states": {}}
+    if not settings.configured:
+        return {
+            "ok": False,
+            "message": "Home Assistant API token is unavailable, so Syn cannot capture a restore snapshot.",
+            "states": {},
+        }
+
+    states: dict[str, dict[str, Any]] = {}
+    failed: list[dict[str, str]] = []
+    for entity_id in entity_ids:
+        try:
+            raw = await _get_json(f"/states/{entity_id}", settings)
+        except Exception as exc:
+            failed.append({"entity_id": entity_id, "message": _api_failure_message(exc)})
+            continue
+        if not isinstance(raw, dict):
+            failed.append({"entity_id": entity_id, "message": "Home Assistant returned an invalid state payload"})
+            continue
+        domain = entity_id.split(".", 1)[0]
+        attrs = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
+        states[entity_id] = {
+            "entity_id": entity_id,
+            "domain": domain,
+            "state": raw.get("state", "unknown"),
+            "attributes": _snapshot_attributes(domain, attrs),
+        }
+
+    return {
+        "ok": bool(states),
+        "message": f"Captured restore state for {len(states)} of {len(entity_ids)} entities.",
+        "states": states,
+        "failed": failed,
+    }
+
+
+def _light_restore_payload(entity_id: str, snapshot: dict[str, Any]) -> dict[str, Any]:
+    attrs = snapshot.get("attributes") if isinstance(snapshot.get("attributes"), dict) else {}
+    payload = {"entity_id": entity_id}
+    for key in (
+        "brightness",
+        "color_temp_kelvin",
+        "color_temp",
+        "rgb_color",
+        "xy_color",
+        "hs_color",
+        "effect",
+    ):
+        if key in attrs:
+            payload[key] = attrs[key]
+    has_color = any(key in payload for key in ("color_temp", "color_temp_kelvin", "rgb_color", "xy_color", "hs_color"))
+    if has_color:
+        payload.pop("effect", None)
+    return payload
+
+
+def _restore_service_calls(entity_id: str, snapshot: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
+    domain = snapshot.get("domain") or entity_id.split(".", 1)[0]
+    state = str(snapshot.get("state") or "unknown").lower()
+    attrs = snapshot.get("attributes") if isinstance(snapshot.get("attributes"), dict) else {}
+    if domain not in RESTORABLE_DOMAINS or state in {"unknown", "unavailable"}:
+        return []
+    if state == "off":
+        return [(domain, "turn_off", {"entity_id": entity_id})]
+    if domain == "light":
+        return [("light", "turn_on", _light_restore_payload(entity_id, snapshot))]
+    if domain == "switch":
+        return [("switch", "turn_on", {"entity_id": entity_id})]
+    if domain == "fan":
+        payload = {"entity_id": entity_id}
+        for key in ("percentage", "preset_mode", "oscillating"):
+            if key in attrs:
+                payload[key] = attrs[key]
+        return [("fan", "turn_on", payload)]
+    if domain == "media_player":
+        calls = [("media_player", "turn_on", {"entity_id": entity_id})]
+        if "volume_level" in attrs:
+            calls.append(("media_player", "volume_set", {"entity_id": entity_id, "volume_level": attrs["volume_level"]}))
+        if "source" in attrs:
+            calls.append(("media_player", "select_source", {"entity_id": entity_id, "source": attrs["source"]}))
+        return calls
+    return []
+
+
+async def _post_service_with_retries(
+    domain: str,
+    service: str,
+    payload: dict[str, Any],
+    settings: HAApiSettings,
+) -> dict[str, Any]:
+    attempts = _retry_payloads(domain, service, payload)
+    last_exc: Exception | None = None
+    for index, attempt in enumerate(attempts):
+        try:
+            await _post_json(f"/services/{domain}/{service}", attempt, settings)
+            result = {"service": f"{domain}.{service}", "data": attempt, "status": "success"}
+            if index > 0:
+                result["message"] = "Applied after simplifying unsupported restore data"
+            return result
+        except Exception as exc:
+            last_exc = exc
+    return {
+        "service": f"{domain}.{service}",
+        "data": attempts[0] if attempts else payload,
+        "status": "failed",
+        "message": _api_failure_message(last_exc) if last_exc else "Restore service call failed",
+    }
+
+
+async def restore_scene_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    """Restore device states captured before a Syn scene started."""
+
+    if not snapshot or not isinstance(snapshot, dict) or not snapshot.get("states"):
+        return {
+            "overall_status": "skipped",
+            "message": "No pre-scene restore snapshot is available, so Syn left devices unchanged.",
+            "actions": [],
+            "actions_executed": 0,
+            "actions_failed": 0,
+        }
+
+    settings = load_ha_api_settings()
+    if not settings.configured:
+        return {
+            "overall_status": "failed",
+            "message": "Home Assistant API token is unavailable, so Syn could not restore the previous states.",
+            "actions": [],
+            "actions_executed": 0,
+            "actions_failed": 0,
+        }
+
+    results = []
+    for entity_id, state_snapshot in snapshot.get("states", {}).items():
+        calls = _restore_service_calls(entity_id, state_snapshot)
+        if not calls:
+            results.append(
+                {
+                    "entity_id": entity_id,
+                    "status": "skipped",
+                    "message": "State was unknown/unavailable or domain is not safely restorable.",
+                }
+            )
+            continue
+        for domain, service, payload in calls:
+            result = await _post_service_with_retries(domain, service, payload, settings)
+            result["entity_id"] = entity_id
+            results.append(result)
+
+    failed = [result for result in results if result["status"] == "failed"]
+    succeeded = [result for result in results if result["status"] == "success"]
+    status = "success" if succeeded and not failed else "failed" if failed else "skipped"
+    return {
+        "overall_status": status,
+        "message": f"Restored {len(succeeded)} previous-state service calls for {len(snapshot.get('states', {}))} entities.",
+        "actions": results,
+        "actions_executed": len(succeeded),
+        "actions_failed": len(failed),
+    }
 
 
 def _bounded_action_int(action: dict[str, Any], key: str, default: int, minimum: int, maximum: int) -> int:

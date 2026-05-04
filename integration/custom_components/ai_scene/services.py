@@ -44,6 +44,16 @@ async def call_addon_commit(hass: HomeAssistant, scene_id: str) -> dict:
         return r.json()
 
 
+async def call_addon_scene_action(hass: HomeAssistant, action: str, scene_id: str) -> dict:
+    import httpx
+
+    addon_url = hass.data.get("ai_scene_addon_url") or "http://localhost:8000"
+    async with httpx.AsyncClient() as client:
+        r = await client.post(f"{addon_url}/{action}/{scene_id}", timeout=90)
+        r.raise_for_status()
+        return r.json()
+
+
 async def build_generation_payload(hass: HomeAssistant, call: ServiceCall) -> dict:
     room_id = call.data.get("room_id")
     return {
@@ -88,4 +98,31 @@ async def execute_service(hass: HomeAssistant, call: ServiceCall) -> dict:
         raise ValueError("scene payload or a generated scene is required")
     result = await execute_scene(hass, scene)
     hass.data.setdefault("ai_scene", {})["last_execution"] = result
+    return result
+
+
+async def start_scene_service(hass: HomeAssistant, call: ServiceCall) -> dict:
+    scene_id = call.data.get("scene_id")
+    if not scene_id:
+        raise ValueError("scene_id is required")
+    result = await call_addon_scene_action(hass, "start_scene", scene_id)
+    hass.data.setdefault("ai_scene", {})["last_start"] = result
+    return result
+
+
+async def stop_scene_service(hass: HomeAssistant, call: ServiceCall) -> dict:
+    scene_id = call.data.get("scene_id")
+    if not scene_id:
+        raise ValueError("scene_id is required")
+    result = await call_addon_scene_action(hass, "stop_scene", scene_id)
+    hass.data.setdefault("ai_scene", {})["last_stop"] = result
+    return result
+
+
+async def deactivate_scene_service(hass: HomeAssistant, call: ServiceCall) -> dict:
+    scene_id = call.data.get("scene_id")
+    if not scene_id:
+        raise ValueError("scene_id is required")
+    result = await call_addon_scene_action(hass, "deactivate_scene", scene_id)
+    hass.data.setdefault("ai_scene", {})["last_deactivate"] = result
     return result

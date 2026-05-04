@@ -32,10 +32,16 @@ class ScenePlanResponse(BaseModel):
     scene_id: Optional[str]
     scene: Dict[str, Any] = {}
     warnings: List[str] = []
+    export: Dict[str, Any] = {}
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]):
-        return cls(scene_id=d.get("scene_id"), scene=d.get("scene"), warnings=d.get("warnings", []))
+        return cls(
+            scene_id=d.get("scene_id"),
+            scene=d.get("scene"),
+            warnings=d.get("warnings", []),
+            export=d.get("export", {}),
+        )
 
 
 class ErrorResponse(BaseModel):

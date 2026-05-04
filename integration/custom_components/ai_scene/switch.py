@@ -93,6 +93,7 @@ class SynSceneSwitch(SwitchEntity):
             "is_animated": self.summary.get("is_animated", False),
             "running": self.summary.get("running", False),
             "runtime": self.summary.get("runtime"),
+            "haos": self.summary.get("haos"),
             "action_count": self.summary.get("action_count", 0),
             "controlled_entities": self.summary.get("controlled_entities", []),
             "source": "Syn add-on",

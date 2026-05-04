@@ -4,7 +4,15 @@ This module exposes services for preview and commit, and integrates with the add
 """
 import logging
 from typing import Any
-from .services import commit_service, execute_service, generate_service, preview_service
+from .services import (
+    commit_service,
+    deactivate_scene_service,
+    execute_service,
+    generate_service,
+    preview_service,
+    start_scene_service,
+    stop_scene_service,
+)
 from .const import ADDON_DEFAULT_URL, DOMAIN, PLATFORMS
 
 try:
@@ -33,10 +41,22 @@ async def async_setup(hass: HomeAssistant, config: dict):
     async def _execute(call):
         await execute_service(hass, call)
 
+    async def _start_scene(call):
+        await start_scene_service(hass, call)
+
+    async def _stop_scene(call):
+        await stop_scene_service(hass, call)
+
+    async def _deactivate_scene(call):
+        await deactivate_scene_service(hass, call)
+
     hass.services.async_register("ai_scene", "generate_scene", _generate)
     hass.services.async_register("ai_scene", "preview", _preview)
     hass.services.async_register("ai_scene", "commit", _commit)
     hass.services.async_register("ai_scene", "execute_scene", _execute)
+    hass.services.async_register("ai_scene", "start_scene", _start_scene)
+    hass.services.async_register("ai_scene", "stop_scene", _stop_scene)
+    hass.services.async_register("ai_scene", "deactivate_scene", _deactivate_scene)
     hass.data[DOMAIN]["services_registered"] = True
     return True
 

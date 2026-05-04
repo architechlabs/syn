@@ -127,7 +127,9 @@ INDEX_HTML = """<!doctype html>
       border-radius: 18px;
       background: rgba(0,0,0,.16);
     }
+    .saved.running { border-color: rgba(140,242,174,.48); box-shadow: 0 0 0 1px rgba(140,242,174,.08) inset; }
     .saved .actions { margin-top: 10px; }
+    .running-panel { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
     .status {
       min-height: 22px;
       margin-top: 12px;
@@ -242,6 +244,13 @@ INDEX_HTML = """<!doctype html>
               <button class="secondary" id="refresh-scenes">Refresh scenes</button>
               <button class="ghost" id="config">Config</button>
               <button class="ghost" id="diagnostics">Diagnostics</button>
+            </div>
+            <div class="running-panel">
+              <h2>Running Now</h2>
+              <p class="hint">Animated scenes stay here until you stop them. Stop restores the pre-scene device state when a snapshot exists.</p>
+              <div id="running-scenes" class="scene-list" style="margin-top:14px">
+                <div class="empty">No scenes running.</div>
+              </div>
             </div>
             <div id="scenes" class="scene-list" style="margin-top:14px">
               <div class="empty">No saved scenes loaded yet.</div>
@@ -510,6 +519,15 @@ INDEX_HTML = """<!doctype html>
       $("#metric-scenes").textContent = state.scenes.length;
     }
 
+    function haosSummary(scene) {
+      const haos = scene.haos || {};
+      const parts = [];
+      if (haos.native_scene_id) parts.push(`HA scene ${haos.native_scene_id}`);
+      if (haos.start_script_id) parts.push(`start ${haos.start_script_id}`);
+      if (haos.stop_script_id) parts.push(`stop ${haos.stop_script_id}`);
+      return parts.length ? parts.join(" | ") : "HA native export pending";
+    }
+
     function renderChips() {
       const domains = ["all", ...new Set(state.entities.map((entity) => entity.domain).sort())];
       $("#chips").innerHTML = domains.map((domain) =>
@@ -552,19 +570,22 @@ INDEX_HTML = """<!doctype html>
 
     function renderScenes() {
       renderMetrics();
+      renderRunningScenes();
       if (!state.scenes.length) {
         $("#scenes").innerHTML = `<div class="empty">No saved scenes yet. Use Save draft, then refresh here or wait for Home Assistant to refresh the Syn integration.</div>`;
         return;
       }
       $("#scenes").innerHTML = state.scenes.map((scene) => `
-        <article class="saved">
+        <article class="saved ${scene.running ? "running" : ""}">
           <strong>${scene.name || scene.id}</strong>
           <small>${scene.id}</small>
           <small>${scene.target_room || "No room"} | ${scene.status || "draft"}${scene.is_animated ? " | animated" : ""}${scene.running ? " | running" : ""}</small>
+          <small>${escapeHtml(haosSummary(scene))}</small>
           <div class="actions">
             <button class="secondary" data-load-scene="${scene.id}">View</button>
             <button class="ghost" data-run-scene="${scene.id}">Run</button>
-            <button class="ghost" data-off-scene="${scene.id}">Turn off</button>
+            <button class="ghost" data-off-scene="${scene.id}">Stop / restore</button>
+            <button class="ghost" data-export-scene="${scene.id}">Export HA</button>
             <button class="ghost danger" data-delete-scene="${scene.id}">Delete</button>
           </div>
         </article>
@@ -578,8 +599,39 @@ INDEX_HTML = """<!doctype html>
       document.querySelectorAll("[data-off-scene]").forEach((button) => {
         button.addEventListener("click", () => deactivateSavedScene(button.dataset.offScene).catch((error) => setStatus(error.message, "bad")));
       });
+      document.querySelectorAll("[data-export-scene]").forEach((button) => {
+        button.addEventListener("click", () => exportSavedScene(button.dataset.exportScene).catch((error) => setStatus(error.message, "bad")));
+      });
       document.querySelectorAll("[data-delete-scene]").forEach((button) => {
         button.addEventListener("click", () => deleteScene(button.dataset.deleteScene).catch((error) => setStatus(error.message, "bad")));
+      });
+    }
+
+    function renderRunningScenes() {
+      const running = state.scenes.filter((scene) => scene.running);
+      if (!running.length) {
+        $("#running-scenes").innerHTML = `<div class="empty">No scenes running.</div>`;
+        return;
+      }
+      $("#running-scenes").innerHTML = running.map((scene) => {
+        const runtime = scene.runtime || {};
+        return `
+          <article class="saved running">
+            <strong>${scene.name || scene.id}</strong>
+            <small>${runtime.iterations || 0} loop${runtime.iterations === 1 ? "" : "s"} | snapshot ${runtime.restore_snapshot_available ? "ready" : "not captured"}</small>
+            <small>${runtime.last_error ? escapeHtml(runtime.last_error) : "Running smoothly."}</small>
+            <div class="actions">
+              <button class="secondary" data-load-scene="${scene.id}">View</button>
+              <button class="ghost danger" data-cancel-scene="${scene.id}">Cancel / restore</button>
+            </div>
+          </article>
+        `;
+      }).join("");
+      document.querySelectorAll("[data-cancel-scene]").forEach((button) => {
+        button.addEventListener("click", () => deactivateSavedScene(button.dataset.cancelScene).catch((error) => setStatus(error.message, "bad")));
+      });
+      document.querySelectorAll("[data-load-scene]").forEach((button) => {
+        button.addEventListener("click", () => loadScene(button.dataset.loadScene));
       });
     }
 
@@ -639,12 +691,23 @@ INDEX_HTML = """<!doctype html>
     }
 
     async function deactivateSavedScene(sceneId) {
-      setStatus("Turning off scene devices...");
+      setStatus("Stopping scene and restoring previous states...");
       const response = await fetch(endpoint(`deactivate_scene/${sceneId}`), {method: "POST"});
       const data = await response.json();
       renderOutput(data);
       if (!response.ok || data.overall_status === "failed") throw new Error(data.message || "Scene deactivation failed.");
-      setStatus(data.message || "Scene devices turned off.", "ok");
+      await loadScenes();
+      setStatus(data.message || "Scene stopped. Previous states restored when Syn had a snapshot.", "ok");
+    }
+
+    async function exportSavedScene(sceneId) {
+      setStatus("Exporting native Home Assistant scene/script...");
+      const response = await fetch(endpoint(`export_scene/${sceneId}`), {method: "POST"});
+      const data = await response.json();
+      renderOutput(data);
+      if (!response.ok || data.ok === false) throw new Error(data.message || "Native export failed.");
+      await loadScenes();
+      setStatus(data.message || "Native HA scene/script exported.", "ok");
     }
 
     async function deleteScene(sceneId) {
@@ -682,7 +745,14 @@ INDEX_HTML = """<!doctype html>
         renderOutput(data);
         if (!response.ok) throw new Error(data.detail?.message || data.detail || `HTTP ${response.status}`);
         state.lastScene = data.scene || null;
-        setStatus(path === "generate_scene" ? "Draft saved. It will appear as a Syn scene entity." : "Preview ready.", "ok");
+        if (path === "generate_scene") {
+          const exportText = data.export?.ok
+            ? "Draft saved and exported to HA scenes/scripts."
+            : "Draft saved; native HA export needs attention in the response.";
+          setStatus(exportText, data.export?.ok ? "ok" : "bad");
+        } else {
+          setStatus("Preview ready.", "ok");
+        }
         if (path === "generate_scene") await loadScenes();
       } catch (error) {
         setStatus(error.message, "bad");
@@ -755,6 +825,7 @@ INDEX_HTML = """<!doctype html>
     loadAreas();
     loadEntities();
     loadScenes();
+    setInterval(loadScenes, 15000);
     diagnostics().catch(() => {
       $("#health-title").textContent = "Diagnostics unavailable";
       $("#health-text").textContent = "Open Config for details.";

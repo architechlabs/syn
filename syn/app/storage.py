@@ -39,6 +39,25 @@ class SceneStorage:
             payload = json.loads(txt)
             return payload.get("scene", payload)
 
+    async def update_scene(self, scene_id: str, scene: Dict[str, Any]) -> bool:
+        path = os.path.join(self.base, f"{scene_id}.json")
+        if not os.path.exists(path):
+            return False
+        async with aiofiles.open(path, "r", encoding="utf-8") as fh:
+            payload = json.loads(await fh.read())
+        if "scene" not in payload:
+            payload = {
+                "id": scene_id,
+                "created": payload.get("created"),
+                "status": payload.get("status", "draft"),
+                "scene": payload,
+            }
+        payload["scene"] = scene
+        payload["updated"] = datetime.utcnow().isoformat()
+        async with aiofiles.open(path, "w", encoding="utf-8") as fh:
+            await fh.write(json.dumps(payload, ensure_ascii=False, indent=2))
+        return True
+
     async def delete_scene(self, scene_id: str) -> bool:
         path = os.path.join(self.base, f"{scene_id}.json")
         if not os.path.exists(path):
@@ -99,6 +118,7 @@ class SceneStorage:
                             and any(action.get(key) for key in ("delay_ms", "duration_ms", "interval_ms"))
                             for action in actions
                         ),
+                        "haos": scene.get("haos", {}) if isinstance(scene, dict) else {},
                         "action_count": len(actions),
                         "controlled_entities": controlled_entities,
                     }

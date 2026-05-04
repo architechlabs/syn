@@ -8,6 +8,7 @@ from .ha_client import discovery_status as get_discovery_status
 from .ha_client import execute_scene_actions
 from .ha_client import load_ha_api_settings
 from .ha_client import list_areas, list_entities
+from .native_export import export_scene_to_home_assistant, remove_scene_from_home_assistant
 from .validator import validate_and_normalize
 from .storage import SceneStorage
 from .storage import BASE as SCENES_PATH
@@ -192,8 +193,15 @@ async def generate_scene(request: ScenePlanRequest):
     scene = validated.normalized
     # persist draft
     scene_id = await storage.save_scene(scene)
+    export = await export_scene_to_home_assistant(scene_id, scene, logger=logger)
+    if export.get("ok"):
+        await storage.update_scene(scene_id, scene)
+    else:
+        validated.warnings.append(export.get("message", "Native Home Assistant export failed."))
     logger.info("Scene draft saved: %s at %s", scene_id, SCENES_PATH)
-    return ScenePlanResponse.from_dict({"scene": scene, "scene_id": scene_id, "warnings": validated.warnings})
+    return ScenePlanResponse.from_dict(
+        {"scene": scene, "scene_id": scene_id, "warnings": validated.warnings, "export": export}
+    )
 
 
 @app.get("/get_scene/{scene_id}")
@@ -214,6 +222,17 @@ async def commit_scene(scene_id: str):
     if not committed:
         raise HTTPException(status_code=404, detail="scene not found")
     return {"status": "committed", "scene_id": scene_id}
+
+
+@app.post("/export_scene/{scene_id}")
+async def export_scene(scene_id: str):
+    scene = await storage.get_scene(scene_id)
+    if not scene:
+        raise HTTPException(status_code=404, detail="scene not found")
+    export = await export_scene_to_home_assistant(scene_id, scene, logger=logger)
+    if export.get("ok"):
+        await storage.update_scene(scene_id, scene)
+    return export
 
 
 @app.post("/execute_scene")
@@ -237,7 +256,7 @@ async def start_scene(scene_id: str):
 
 @app.post("/stop_scene/{scene_id}")
 async def stop_scene(scene_id: str):
-    return await runtime.stop(scene_id)
+    return await runtime.stop(scene_id, restore=True)
 
 
 @app.get("/scene_status/{scene_id}")
@@ -289,8 +308,20 @@ async def deactivate_scene(scene_id: str):
     scene = await storage.get_scene(scene_id)
     if not scene:
         raise HTTPException(status_code=404, detail="scene not found")
-    await runtime.stop(scene_id)
-    return await execute_scene_actions(_deactivation_plan(scene))
+    stopped = await runtime.stop(scene_id, restore=True)
+    restore_result = stopped.get("restore_result") if isinstance(stopped, dict) else None
+    if isinstance(restore_result, dict) and restore_result.get("overall_status") != "skipped":
+        restore_result["runtime"] = stopped
+        return restore_result
+    return {
+        "overall_status": "skipped",
+        "message": "No pre-scene snapshot exists for this saved scene, so Syn left devices unchanged instead of turning them off.",
+        "actions": [],
+        "actions_executed": 0,
+        "actions_failed": 0,
+        "runtime": stopped,
+        "fallback_plan": _deactivation_plan(scene),
+    }
 
 
 @app.get("/scenes")
@@ -301,11 +332,12 @@ async def list_scenes(skip: int = 0, limit: int = 100):
 
 @app.delete("/scenes/{scene_id}")
 async def delete_scene(scene_id: str):
-    await runtime.stop(scene_id)
+    stopped = await runtime.stop(scene_id, restore=True)
+    native = await remove_scene_from_home_assistant(scene_id, logger=logger)
     deleted = await storage.delete_scene(scene_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="scene not found")
-    return {"ok": True, "scene_id": scene_id, "message": "Scene deleted"}
+    return {"ok": True, "scene_id": scene_id, "message": "Scene deleted", "runtime": stopped, "native": native}
 
 
 @app.post("/preview_scene")
