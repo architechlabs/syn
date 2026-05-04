@@ -54,6 +54,20 @@ def _native_name(scene: dict[str, Any]) -> str:
     return name[:MAX_NATIVE_NAME]
 
 
+def _native_scene_name(scene: dict[str, Any]) -> str:
+    name = _native_name(scene)
+    if _is_animated(scene) and "snapshot" not in name.lower():
+        name = f"{name} Snapshot"
+    return name[:MAX_NATIVE_NAME]
+
+
+def _native_run_name(scene: dict[str, Any]) -> str:
+    name = _native_name(scene)
+    if _is_animated(scene) and "loop" not in name.lower():
+        name = f"{name} Loop"
+    return name[:MAX_NATIVE_NAME]
+
+
 def _is_animated(scene: dict[str, Any]) -> bool:
     automation = scene.get("automation") if isinstance(scene.get("automation"), dict) else {}
     if str(automation.get("mode") or "").lower() in {"loop", "sequence"}:
@@ -151,7 +165,7 @@ def _managed_scene_entry(scene_id: str, scene: dict[str, Any]) -> dict[str, Any]
     entities = _snapshot_entities(scene)
     return {
         "id": ids.scene_id,
-        "name": _native_name(scene),
+        "name": _native_scene_name(scene),
         "entities": entities,
         "icon": "mdi:creation",
     }
@@ -159,7 +173,7 @@ def _managed_scene_entry(scene_id: str, scene: dict[str, Any]) -> dict[str, Any]
 
 def _start_script_entry(scene_id: str, scene: dict[str, Any]) -> dict[str, Any]:
     return {
-        "alias": _native_name(scene),
+        "alias": _native_run_name(scene),
         "icon": "mdi:creation",
         "mode": "restart",
         "sequence": [
@@ -172,7 +186,7 @@ def _start_script_entry(scene_id: str, scene: dict[str, Any]) -> dict[str, Any]:
 
 
 def _stop_script_entry(scene_id: str, scene: dict[str, Any]) -> dict[str, Any]:
-    name = _native_name(scene)
+    name = _native_run_name(scene)
     return {
         "alias": f"Stop {name}"[:MAX_NATIVE_NAME],
         "icon": "mdi:stop-circle-outline",

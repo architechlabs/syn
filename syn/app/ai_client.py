@@ -124,6 +124,21 @@ COZY_PALETTE = (
 )
 
 
+def _title_from_intent(intent: str, style: str) -> str:
+    cleaned = re.sub(r"\b(create|make|set|turn|please|scene|a|an|the)\b", " ", intent, flags=re.I)
+    cleaned = re.sub(r"[^a-zA-Z0-9 ]+", " ", cleaned)
+    words = [word for word in cleaned.split() if word]
+    if words:
+        return " ".join(words[:5]).title()
+    return {
+        "party": "Party Loop",
+        "horror": "Horror Pulse",
+        "cozy": "Cozy Movie Night",
+        "office": "Focus Lighting",
+        "full_brightness": "Full Brightness",
+    }.get(style, "Syn Scene")
+
+
 def _fallback_style(intent: str) -> str:
     text = intent.lower()
     if any(phrase in text for phrase in ("full brightness", "maximum brightness", "max brightness", "100%", "brightest")):
@@ -302,8 +317,8 @@ def _offline_scene(prompt: str) -> Dict[str, Any]:
         actions.append(action)
 
     scene = {
-        "scene_name": "AI Scene Draft",
-        "description": "Local deterministic scene draft generated without an API key.",
+        "scene_name": _title_from_intent(intent, style),
+        "description": f"Local fallback for: {intent}",
         "intent": intent,
         "target_room": room,
         "actions": actions,

@@ -191,8 +191,8 @@ INDEX_HTML = """<!doctype html>
   <main>
     <section class="hero">
       <div>
-        <h1>Syn</h1>
-        <p class="lede">Build Home Assistant scenes from normal language. Choose devices, preview safe actions, save drafts, and expose saved drafts as scene entities through the Syn integration.</p>
+        <h1>Syn Studio</h1>
+        <p class="lede">Design live Home Assistant moods from plain language. Syn saves a native HA snapshot scene, a runnable loop script, and a Syn control entity for stop/restore.</p>
       </div>
       <div class="health">
         <strong><span id="health-dot" class="dot"></span><span id="health-title">Checking Syn</span></strong>
@@ -237,7 +237,7 @@ INDEX_HTML = """<!doctype html>
         <div class="card">
           <div class="card-header">
             <h2>Saved Scenes</h2>
-            <p class="hint">Saved drafts appear here and in Home Assistant as scene entities after the integration refreshes.</p>
+            <p class="hint">Each save exports a HA Scene snapshot and HA Scripts for running/stopping the Syn loop.</p>
           </div>
           <div class="card-body">
             <div class="actions" style="margin-top:0">
@@ -289,7 +289,7 @@ INDEX_HTML = """<!doctype html>
       <aside class="right card">
         <div class="card-header">
           <h2>3. Review</h2>
-          <p class="hint">Preview before applying. Save draft creates a Syn scene entity in the integration.</p>
+            <p class="hint">Readable plan first, raw JSON when you need it. Run uses Syn runtime; HA Scripts use the same runtime.</p>
         </div>
         <div class="card-body">
           <div class="tabs">
@@ -583,7 +583,7 @@ INDEX_HTML = """<!doctype html>
           <small>${escapeHtml(haosSummary(scene))}</small>
           <div class="actions">
             <button class="secondary" data-load-scene="${scene.id}">View</button>
-            <button class="ghost" data-run-scene="${scene.id}">Run</button>
+            <button class="ghost" data-run-scene="${scene.id}">Run loop</button>
             <button class="ghost" data-off-scene="${scene.id}">Stop / restore</button>
             <button class="ghost" data-export-scene="${scene.id}">Export HA</button>
             <button class="ghost danger" data-delete-scene="${scene.id}">Delete</button>

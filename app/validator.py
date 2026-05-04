@@ -572,8 +572,14 @@ def _normalize_action_data(
                 normalized.pop(key, None)
         if "transition" in normalized:
             transition = normalized["transition"]
-            if not isinstance(transition, (int, float)) or isinstance(transition, bool) or not (0 <= float(transition) <= 300):
+            if not isinstance(transition, (int, float)) or isinstance(transition, bool):
                 raise ValueError(f"Invalid transition for {entity_id}: {transition}")
+            transition = float(transition)
+            if transition > 300 and transition <= MAX_DURATION_MS:
+                transition = transition / 1000
+                warnings.append(f"Converted millisecond transition to seconds for {entity_id}")
+            if not (0 <= transition <= 300):
+                raise ValueError(f"Invalid transition for {entity_id}: {normalized['transition']}")
             normalized["transition"] = round(float(transition), 2)
         if "brightness" in normalized:
             brightness = normalized["brightness"]
