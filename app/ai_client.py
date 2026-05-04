@@ -21,6 +21,9 @@ def _provider_kind(settings) -> str:
     if preset and preset != "auto":
         return preset
 
+    base_url = getattr(settings, "base_url", "").lower()
+    if "integrate.api.nvidia.com" in base_url:
+        return "nvidia"
     model = settings.model.lower()
     if model.startswith("z-ai/") or "glm" in model:
         return "glm"
@@ -41,7 +44,7 @@ def _chat_completion_kwargs(prompt: str, settings) -> dict[str, Any]:
     }
 
     provider = _provider_kind(settings)
-    if provider == "glm":
+    if provider in {"glm", "nvidia"}:
         kwargs["top_p"] = 1
         chat_template_kwargs = {
             "enable_thinking": bool(getattr(settings, "enable_thinking", False)),
@@ -113,6 +116,13 @@ HORROR_PALETTE = (
     [15, 0, 80],
 )
 
+COZY_PALETTE = (
+    [255, 111, 54],
+    [255, 147, 82],
+    [255, 92, 116],
+    [210, 90, 255],
+)
+
 
 def _fallback_style(intent: str) -> str:
     text = intent.lower()
@@ -137,6 +147,19 @@ def _wants_motion(intent: str, style: str) -> bool:
     )
 
 
+def _wants_ambient_loop(intent: str, style: str, entities: list[dict[str, Any]]) -> bool:
+    if style not in {"cozy", "general"}:
+        return False
+    text = intent.lower()
+    rgb_lights = [
+        entity
+        for entity in entities
+        if (entity.get("domain") or str(entity.get("entity_id", "")).split(".", 1)[0]) == "light"
+        and "rgb_color" in set(entity.get("capabilities", []) or [])
+    ]
+    return bool(rgb_lights) and any(word in text for word in ("movie", "cozy", "cosy", "night", "relax", "ambient", "scene"))
+
+
 def _fallback_kelvin(entity: dict[str, Any], target: int) -> int:
     attrs = ((entity.get("state") or {}).get("attributes") or {})
     minimum = attrs.get("min_color_temp_kelvin") or 2000
@@ -158,6 +181,7 @@ def _offline_scene(prompt: str) -> Dict[str, Any]:
     intent = intent_match.group(1).strip() if intent_match else "Create a scene"
     style = _fallback_style(intent)
     wants_motion = _wants_motion(intent, style)
+    wants_ambient_loop = _wants_ambient_loop(intent, style, entities)
 
     actions = []
     entity_map = {}
@@ -171,6 +195,31 @@ def _offline_scene(prompt: str) -> Dict[str, Any]:
         service = "turn_on"
 
         if domain == "light":
+            if wants_ambient_loop and "rgb_color" in caps:
+                if "brightness" in caps:
+                    data["brightness"] = 58
+                for phase in range(min(4, len(COZY_PALETTE))):
+                    phase_data = dict(data)
+                    phase_data["rgb_color"] = COZY_PALETTE[(index + phase) % len(COZY_PALETTE)]
+                    phase_data["transition"] = 5
+                    entity_map[entity_id] = {
+                        "entity_id": entity_id,
+                        "domain": domain,
+                        "capabilities": sorted(caps),
+                    }
+                    actions.append(
+                        {
+                            "entity_id": entity_id,
+                            "domain": domain,
+                            "service": service,
+                            "data": phase_data,
+                            "rationale": "Local fallback ambient movie color phase",
+                            "priority": max(0, 100 - index * 10 - phase),
+                            "delay_ms": 5000 if phase else 0,
+                            "duration_ms": 5000,
+                        }
+                    )
+                continue
             if wants_motion and style in {"party", "horror"} and "rgb_color" in caps:
                 palette = FALLBACK_PALETTE if style == "party" else HORROR_PALETTE
                 if "brightness" in caps:
@@ -263,11 +312,19 @@ def _offline_scene(prompt: str) -> Dict[str, Any]:
         "assumptions": ["Only advertised entities and capabilities were used."],
         "entity_map": entity_map,
     }
-    if wants_motion and style in {"party", "horror"}:
+    if wants_ambient_loop:
         scene["automation"] = {
-            "mode": "sequence",
+            "mode": "loop",
+            "summary": "Continuous local fallback ambient movie lighting loop.",
+            "repeat": 6,
+            "interval_ms": 750,
+        }
+        scene["warnings"].append("AI provider fallback created a continuous ambient loop; stop it from Syn to restore previous states.")
+    elif wants_motion and style in {"party", "horror"}:
+        scene["automation"] = {
+            "mode": "loop",
             "summary": "Short local fallback color choreography.",
-            "repeat": 2,
+            "repeat": 6,
             "interval_ms": 500,
         }
     return scene
