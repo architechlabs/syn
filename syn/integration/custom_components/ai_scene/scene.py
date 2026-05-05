@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from .const import ADDON_DEFAULT_URL, DOMAIN
 
@@ -46,9 +49,70 @@ async def _request_json(hass, method: str, path: str, payload: dict[str, Any] | 
 
 
 async def _list_scene_summaries(hass) -> list[dict[str, Any]]:
-    data = await _request_json(hass, "GET", "/scenes")
-    scenes = data.get("scenes", [])
-    return scenes if isinstance(scenes, list) else []
+    try:
+        data = await _request_json(hass, "GET", "/scenes")
+        scenes = data.get("scenes", [])
+        return scenes if isinstance(scenes, list) else []
+    except Exception as exc:
+        _LOGGER.debug("Syn add-on scene discovery failed, falling back to native YAML: %s", exc)
+        return _list_native_syn_summaries(hass)
+
+
+def _read_yaml(path: Path, fallback: Any) -> Any:
+    if not path.exists() or not path.read_text(encoding="utf-8").strip():
+        return fallback
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception:
+        return fallback
+    return fallback if data is None else data
+
+
+def _config_file(hass, filename: str) -> Path:
+    if hasattr(hass, "config") and hasattr(hass.config, "path"):
+        return Path(hass.config.path(filename))
+    return Path("/config") / filename
+
+
+def _list_native_syn_summaries(hass) -> list[dict[str, Any]]:
+    scenes = _read_yaml(_config_file(hass, "scenes.yaml"), [])
+    scripts = _read_yaml(_config_file(hass, "scripts.yaml"), {})
+    if not isinstance(scenes, list) or not isinstance(scripts, dict):
+        return []
+
+    summaries: list[dict[str, Any]] = []
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        native_id = scene.get("id")
+        if not isinstance(native_id, str) or not native_id.startswith("syn_"):
+            continue
+        start_script_id = f"{native_id}_start"
+        stop_script_id = f"{native_id}_stop"
+        start_script = scripts.get(start_script_id) if isinstance(scripts.get(start_script_id), dict) else {}
+        name = str(start_script.get("alias") or scene.get("name") or native_id)
+        summaries.append(
+            {
+                "id": native_id,
+                "name": name.removesuffix(" Snapshot"),
+                "description": start_script.get("description") or "Exported Syn scene script",
+                "status": "exported",
+                "target_room": "unspecified",
+                "is_animated": "repeat" in str(start_script.get("sequence", "")).lower(),
+                "running": False,
+                "action_count": len(start_script.get("sequence") or []),
+                "controlled_entities": sorted((scene.get("entities") or {}).keys()),
+                "haos": {
+                    "exported": True,
+                    "native_scene_id": native_id,
+                    "start_script_id": f"script.{start_script_id}",
+                    "stop_script_id": f"script.{stop_script_id}",
+                    "source": "Home Assistant YAML fallback",
+                },
+                "source": "Home Assistant YAML fallback",
+            }
+        )
+    return summaries
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
@@ -127,10 +191,23 @@ class SynSavedScene(Scene):
         }
 
     async def async_activate(self, **kwargs: Any) -> None:
-        result = await _request_json(self.hass, "POST", f"/start_scene/{self.scene_id}")
-        nested = result.get("result") if isinstance(result.get("result"), dict) else {}
-        if result.get("ok") is False or nested.get("overall_status") in {"failed", "partial_failure"}:
-            raise HomeAssistantError(result.get("message") or f"Syn scene {self.scene_id} failed")
+        try:
+            result = await _request_json(self.hass, "POST", f"/start_scene/{self.scene_id}")
+            nested = result.get("result") if isinstance(result.get("result"), dict) else {}
+            if result.get("ok") is False or nested.get("overall_status") in {"failed", "partial_failure"}:
+                raise HomeAssistantError(result.get("message") or f"Syn scene {self.scene_id} failed")
+            return
+        except Exception as exc:
+            haos = self.summary.get("haos") if isinstance(self.summary.get("haos"), dict) else {}
+            start_script = haos.get("start_script_id")
+            if not start_script:
+                raise HomeAssistantError(f"Syn scene {self.scene_id} failed: {exc}") from exc
+            await self.hass.services.async_call(
+                "script",
+                "turn_on",
+                {"entity_id": start_script},
+                blocking=True,
+            )
 
     async def async_update(self) -> None:
         try:

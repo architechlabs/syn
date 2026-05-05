@@ -11,7 +11,15 @@ from typing import Any
 
 import yaml
 
-from .ha_client import _clean_service_payload, _post_json, load_ha_api_settings
+from .ha_client import (
+    MAX_DELAY_MS,
+    MAX_DURATION_MS,
+    MAX_INTERVAL_MS,
+    MAX_REPEAT,
+    _clean_service_payload,
+    _post_json,
+    load_ha_api_settings,
+)
 from .version_sync import resolve_ha_config_path
 
 SYN_ID_PREFIX = "syn_"
@@ -160,6 +168,108 @@ def _snapshot_entities(scene: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return entities
 
 
+def _bounded_int(source: dict[str, Any], key: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(source.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _delay_step(delay_ms: int) -> dict[str, Any] | None:
+    if delay_ms <= 0:
+        return None
+    return {"delay": {"milliseconds": delay_ms}}
+
+
+def _action_payload(action: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(action.get("data") or {})
+    duration_ms = _bounded_int(action, "duration_ms", 0, 0, MAX_DURATION_MS)
+    if (
+        duration_ms
+        and action.get("domain") == "light"
+        and action.get("service") == "turn_on"
+        and payload.get("transition") is None
+    ):
+        payload["transition"] = round(duration_ms / 1000, 2)
+    return _clean_service_payload(payload)
+
+
+def _native_action_step(action: dict[str, Any]) -> dict[str, Any] | None:
+    entity_id = action.get("entity_id")
+    domain = action.get("domain")
+    service = action.get("service")
+    if not entity_id or not domain or not service:
+        return None
+    if domain not in {"light", "switch", "fan", "media_player", "cover", "climate"}:
+        return None
+    step: dict[str, Any] = {
+        "action": f"{domain}.{service}",
+        "target": {"entity_id": entity_id},
+    }
+    data = _action_payload(action)
+    if data:
+        step["data"] = data
+    return step
+
+
+def _native_action_sequence(scene: dict[str, Any]) -> list[dict[str, Any]]:
+    sequence: list[dict[str, Any]] = []
+    for action in scene.get("actions", []) or []:
+        if not isinstance(action, dict):
+            continue
+        delay_ms = _bounded_int(action, "delay_ms", 0, 0, MAX_DELAY_MS)
+        delay = _delay_step(delay_ms)
+        if delay:
+            sequence.append(delay)
+
+        step = _native_action_step(action)
+        if step is None:
+            continue
+
+        repeat = _bounded_int(action, "repeat", 1, 1, MAX_REPEAT)
+        interval_ms = _bounded_int(action, "interval_ms", 0, 0, MAX_INTERVAL_MS)
+        if repeat == 1:
+            sequence.append(step)
+            continue
+
+        repeated = [step]
+        repeated_delay = _delay_step(interval_ms)
+        if repeated_delay:
+            repeated.append(repeated_delay)
+        sequence.append({"repeat": {"count": repeat, "sequence": repeated}})
+    return sequence or [{"stop": "Syn scene has no Home Assistant-compatible actions."}]
+
+
+def _scene_interval_ms(scene: dict[str, Any]) -> int:
+    automation = scene.get("automation") if isinstance(scene.get("automation"), dict) else {}
+    return _bounded_int(automation, "interval_ms", 750, 250, MAX_INTERVAL_MS)
+
+
+def _native_start_sequence(scene_id: str, scene: dict[str, Any]) -> list[dict[str, Any]]:
+    sequence = _native_action_sequence(scene)
+    if not _is_animated(scene):
+        return sequence
+
+    interval = _delay_step(_scene_interval_ms(scene))
+    loop_sequence = [*sequence]
+    if interval:
+        loop_sequence.append(interval)
+    return [
+        {
+            "repeat": {
+                "while": [
+                    {
+                        "condition": "template",
+                        "value_template": "{{ true }}",
+                    }
+                ],
+                "sequence": loop_sequence,
+            }
+        }
+    ]
+
+
 def _managed_scene_entry(scene_id: str, scene: dict[str, Any]) -> dict[str, Any]:
     ids = native_ids(scene_id)
     entities = _snapshot_entities(scene)
@@ -175,17 +285,12 @@ def _start_script_entry(scene_id: str, scene: dict[str, Any]) -> dict[str, Any]:
     return {
         "alias": _native_run_name(scene),
         "description": (
-            "Starts the Syn runtime for this scene. Animated scenes keep looping "
-            "inside the add-on until the matching stop script is run."
+            "Runs the Syn scene directly in Home Assistant. Animated scenes keep "
+            "looping in this script until the matching stop script is run."
         ),
         "icon": "mdi:creation",
         "mode": "restart",
-        "sequence": [
-            {
-                "action": "ai_scene.start_scene",
-                "data": {"scene_id": scene_id},
-            }
-        ],
+        "sequence": _native_start_sequence(scene_id, scene),
     }
 
 
@@ -194,15 +299,15 @@ def _stop_script_entry(scene_id: str, scene: dict[str, Any]) -> dict[str, Any]:
     return {
         "alias": f"Stop {name}"[:MAX_NATIVE_NAME],
         "description": (
-            "Stops the Syn runtime for this scene and asks Syn to restore the "
-            "device states captured before the scene started."
+            "Stops the native Home Assistant loop script for this Syn scene. "
+            "Devices are left at their current color/brightness instead of being shut off."
         ),
         "icon": "mdi:stop-circle-outline",
         "mode": "single",
         "sequence": [
             {
-                "action": "ai_scene.deactivate_scene",
-                "data": {"scene_id": scene_id},
+                "action": "script.turn_off",
+                "target": {"entity_id": f"script.{native_ids(scene_id).start_script_id}"},
             }
         ],
     }

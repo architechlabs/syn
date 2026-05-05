@@ -100,14 +100,38 @@ class SynSceneSwitch(SwitchEntity):
         }
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        result = await _request_json(self.hass, "POST", f"/start_scene/{self.scene_id}")
-        nested = result.get("result") if isinstance(result.get("result"), dict) else {}
-        if result.get("ok") is False or nested.get("overall_status") == "failed":
-            raise HomeAssistantError(result.get("message") or f"Syn scene {self.scene_id} failed")
+        try:
+            result = await _request_json(self.hass, "POST", f"/start_scene/{self.scene_id}")
+            nested = result.get("result") if isinstance(result.get("result"), dict) else {}
+            if result.get("ok") is False or nested.get("overall_status") == "failed":
+                raise HomeAssistantError(result.get("message") or f"Syn scene {self.scene_id} failed")
+        except Exception as exc:
+            haos = self.summary.get("haos") if isinstance(self.summary.get("haos"), dict) else {}
+            start_script = haos.get("start_script_id")
+            if not start_script:
+                raise HomeAssistantError(f"Syn scene {self.scene_id} failed: {exc}") from exc
+            await self.hass.services.async_call(
+                "script",
+                "turn_on",
+                {"entity_id": start_script},
+                blocking=True,
+            )
         self._attr_is_on = True
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        result = await _request_json(self.hass, "POST", f"/deactivate_scene/{self.scene_id}")
-        if result.get("overall_status") == "failed":
-            raise HomeAssistantError(result.get("message") or f"Syn scene {self.scene_id} failed to deactivate")
+        try:
+            result = await _request_json(self.hass, "POST", f"/deactivate_scene/{self.scene_id}")
+            if result.get("overall_status") == "failed":
+                raise HomeAssistantError(result.get("message") or f"Syn scene {self.scene_id} failed to deactivate")
+        except Exception as exc:
+            haos = self.summary.get("haos") if isinstance(self.summary.get("haos"), dict) else {}
+            stop_script = haos.get("stop_script_id")
+            if not stop_script:
+                raise HomeAssistantError(f"Syn scene {self.scene_id} failed to deactivate: {exc}") from exc
+            await self.hass.services.async_call(
+                "script",
+                "turn_on",
+                {"entity_id": stop_script},
+                blocking=True,
+            )
         self._attr_is_on = False
