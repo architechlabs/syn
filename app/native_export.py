@@ -174,11 +174,15 @@ def _managed_scene_entry(scene_id: str, scene: dict[str, Any]) -> dict[str, Any]
 def _start_script_entry(scene_id: str, scene: dict[str, Any]) -> dict[str, Any]:
     return {
         "alias": _native_run_name(scene),
+        "description": (
+            "Starts the Syn runtime for this scene. Animated scenes keep looping "
+            "inside the add-on until the matching stop script is run."
+        ),
         "icon": "mdi:creation",
         "mode": "restart",
         "sequence": [
             {
-                "service": "ai_scene.start_scene",
+                "action": "ai_scene.start_scene",
                 "data": {"scene_id": scene_id},
             }
         ],
@@ -189,11 +193,15 @@ def _stop_script_entry(scene_id: str, scene: dict[str, Any]) -> dict[str, Any]:
     name = _native_run_name(scene)
     return {
         "alias": f"Stop {name}"[:MAX_NATIVE_NAME],
+        "description": (
+            "Stops the Syn runtime for this scene and asks Syn to restore the "
+            "device states captured before the scene started."
+        ),
         "icon": "mdi:stop-circle-outline",
         "mode": "single",
         "sequence": [
             {
-                "service": "ai_scene.deactivate_scene",
+                "action": "ai_scene.deactivate_scene",
                 "data": {"scene_id": scene_id},
             }
         ],

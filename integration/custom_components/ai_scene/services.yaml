@@ -1,0 +1,111 @@
+generate_scene:
+  name: Generate scene
+  description: Generate, validate, save, and export a Syn scene from a plain-language prompt.
+  fields:
+    user_prompt:
+      name: Prompt
+      description: What Syn should create, for example "party lights in the living room".
+      required: true
+      selector:
+        text:
+          multiline: true
+    room_id:
+      name: Area or room
+      description: Optional Home Assistant area/room id to narrow device discovery.
+      required: false
+      selector:
+        text:
+    entities:
+      name: Entities
+      description: Optional explicit entity/capability list. Leave empty for automatic discovery.
+      required: false
+      selector:
+        object:
+    constraints:
+      name: Constraints
+      description: Optional scene constraints such as mood, max brightness, or duration.
+      required: false
+      selector:
+        object:
+
+preview:
+  name: Preview scene
+  description: Preview a Syn scene plan without saving it.
+  fields:
+    user_prompt:
+      name: Prompt
+      description: What Syn should create.
+      required: true
+      selector:
+        text:
+          multiline: true
+    room_id:
+      name: Area or room
+      required: false
+      selector:
+        text:
+    entities:
+      name: Entities
+      required: false
+      selector:
+        object:
+    constraints:
+      name: Constraints
+      required: false
+      selector:
+        object:
+
+commit:
+  name: Commit scene
+  description: Commit a previously generated Syn scene draft.
+  fields:
+    scene_id:
+      name: Scene id
+      description: Syn scene id, for example scene-abc123.
+      required: true
+      selector:
+        text:
+
+execute_scene:
+  name: Execute scene payload
+  description: Execute a raw scene payload directly inside Home Assistant.
+  fields:
+    scene:
+      name: Scene payload
+      description: Scene JSON object. If omitted, Syn uses the last generated scene.
+      required: false
+      selector:
+        object:
+
+start_scene:
+  name: Start Syn scene
+  description: Start a saved Syn scene by id. Loop scenes keep running in the add-on until stopped.
+  fields:
+    scene_id:
+      name: Scene id
+      description: Syn scene id, for example scene-abc123.
+      required: true
+      selector:
+        text:
+
+stop_scene:
+  name: Stop Syn scene
+  description: Stop a running Syn scene and restore prior device states when Syn captured them.
+  fields:
+    scene_id:
+      name: Scene id
+      description: Syn scene id, for example scene-abc123.
+      required: true
+      selector:
+        text:
+
+deactivate_scene:
+  name: Deactivate Syn scene
+  description: Stop a running Syn scene and restore prior device states. Used by generated stop scripts.
+  fields:
+    scene_id:
+      name: Scene id
+      description: Syn scene id, for example scene-abc123.
+      required: true
+      selector:
+        text:

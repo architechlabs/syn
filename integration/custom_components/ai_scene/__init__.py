@@ -50,13 +50,13 @@ async def async_setup(hass: HomeAssistant, config: dict):
     async def _deactivate_scene(call):
         await deactivate_scene_service(hass, call)
 
-    hass.services.async_register("ai_scene", "generate_scene", _generate)
-    hass.services.async_register("ai_scene", "preview", _preview)
-    hass.services.async_register("ai_scene", "commit", _commit)
-    hass.services.async_register("ai_scene", "execute_scene", _execute)
-    hass.services.async_register("ai_scene", "start_scene", _start_scene)
-    hass.services.async_register("ai_scene", "stop_scene", _stop_scene)
-    hass.services.async_register("ai_scene", "deactivate_scene", _deactivate_scene)
+    hass.services.async_register(DOMAIN, "generate_scene", _generate)
+    hass.services.async_register(DOMAIN, "preview", _preview)
+    hass.services.async_register(DOMAIN, "commit", _commit)
+    hass.services.async_register(DOMAIN, "execute_scene", _execute)
+    hass.services.async_register(DOMAIN, "start_scene", _start_scene)
+    hass.services.async_register(DOMAIN, "stop_scene", _stop_scene)
+    hass.services.async_register(DOMAIN, "deactivate_scene", _deactivate_scene)
     hass.data[DOMAIN]["services_registered"] = True
     return True
 
